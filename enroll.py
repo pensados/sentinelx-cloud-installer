@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
 """sentinelx-enroll: drive the OAuth enrollment flow on first install.
 
-Spins up a one-shot HTTP server on a random localhost port, opens the user's
-browser to the hub, and captures the enrollment JWT from the redirect fragment.
+Two modes:
+
+1. **browser** (default): spin up a one-shot HTTP server on a localhost port,
+   print the enrollment URL, and capture the token when the redirect lands.
+   Works when the user has a browser that can reach this machine's localhost
+   (typical case: installing on the same machine you're sitting in front of,
+   or via SSH tunnel: `ssh -L 8765:localhost:8765 server`).
+
+2. **paste**: just print instructions for the user to visit the dashboard URL,
+   complete enrollment there, copy the JWT, and paste it on stdin. Works on
+   any headless server.
+
+The installer chooses the mode automatically based on `--mode` (default: browser).
+The script never opens the browser itself — always prints the URL for the user
+to copy. This is more predictable across SSH/headless setups.
 
 Standalone — only depends on the Python stdlib so it works on any boxed Linux
 without pip-installing anything.
@@ -16,15 +29,14 @@ import socket
 import sys
 import threading
 import urllib.parse
-import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-# How long we wait for the user to finish the OAuth dance
-TIMEOUT_SECONDS = 300
+# How long we wait for the user to finish the OAuth dance (browser mode)
+TIMEOUT_SECONDS = 600
 
-# The fragment can't be read server-side, so the page returned to the browser
-# is a small HTML that captures the fragment via JS and POSTs it back to us.
+# Page returned to the browser at /. Reads the URL fragment (which can't be
+# read server-side) and POSTs it back to /finish.
 CAPTURE_PAGE = """<!doctype html>
 <html><head><title>SentinelX enrollment</title>
 <style>body{font-family:system-ui;background:#0e1116;color:#e6edf3;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
@@ -88,33 +100,39 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--hub", required=True, help="Hub base URL (e.g. https://mcp.sentinelx.app)")
-    parser.add_argument("--host-id", required=True)
-    parser.add_argument("--output", required=True, help="Path to write identity.json")
-    args = parser.parse_args()
+def banner(text: str) -> str:
+    """Box the URL so the user can spot it among installer log noise."""
+    line = "─" * (len(text) + 2)
+    return f"\n┌{line}┐\n│ {text} │\n└{line}┘\n"
 
+
+def run_browser_mode(hub: str, host_id: str) -> dict[str, str]:
+    """Spin up local HTTP server, print URL, wait for callback."""
     port = find_free_port()
     callback_url = f"http://localhost:{port}/"
 
     server = CallbackServer(("127.0.0.1", port), CallbackHandler)
-
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
     enroll_url = (
-        f"{args.hub.rstrip('/')}/auth/enroll/start"
-        f"?host_id={urllib.parse.quote(args.host_id)}"
+        f"{hub.rstrip('/')}/auth/enroll/start"
+        f"?host_id={urllib.parse.quote(host_id)}"
         f"&callback={urllib.parse.quote(callback_url)}"
     )
 
-    print(f"Opening browser: {enroll_url}", file=sys.stderr)
-    if not webbrowser.open(enroll_url):
-        print("Could not open browser automatically.", file=sys.stderr)
-        print(f"Please open this URL manually:\n  {enroll_url}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print("  SentinelX enrollment — open this URL in your browser:", file=sys.stderr)
+    print(banner(enroll_url), file=sys.stderr)
+    print("  Local listener:", callback_url, file=sys.stderr)
+    print("  If running on a remote server, tunnel first:", file=sys.stderr)
+    print(f"    ssh -L {port}:localhost:{port} <user>@<remote>", file=sys.stderr)
+    print(f"  Or use 'paste' mode: --mode paste", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"Waiting for completion (timeout: {TIMEOUT_SECONDS}s)…", file=sys.stderr)
 
-    # Wait for the result
     try:
         for _ in range(TIMEOUT_SECONDS):
             if server.result or server.error:
@@ -124,23 +142,72 @@ def main() -> None:
         server.shutdown()
 
     if server.error:
-        print(f"Enrollment failed: {server.error}", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(f"Enrollment failed: {server.error}")
     if not server.result:
-        print(f"Enrollment timed out after {TIMEOUT_SECONDS}s", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(f"Enrollment timed out after {TIMEOUT_SECONDS}s")
+    return server.result
+
+
+def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
+    """Print dashboard URL, read JWT from stdin."""
+    dashboard_url = (
+        f"{hub.rstrip('/')}/auth/dashboard/enroll"
+        f"?host_id={urllib.parse.quote(host_id)}"
+    )
+
+    print(file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print("  SentinelX enrollment (paste mode)", file=sys.stderr)
+    print(file=sys.stderr)
+    print("  1. Open this URL in your browser:", file=sys.stderr)
+    print(banner(dashboard_url), file=sys.stderr)
+    print("  2. Log in with your SentinelX account.", file=sys.stderr)
+    print("  3. The page will display an enrollment token.", file=sys.stderr)
+    print("  4. Copy it and paste it below.", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print(file=sys.stderr)
+
+    print("Paste enrollment token: ", file=sys.stderr, end="", flush=True)
+    token = sys.stdin.readline().strip()
+
+    if not token:
+        raise SystemExit("No token entered.")
+    if token.count(".") != 2:
+        raise SystemExit("Token doesn't look like a JWT (expected 3 segments).")
+
+    return {"token": token, "host_id": host_id}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Enroll this host with SentinelX")
+    parser.add_argument("--hub", required=True, help="Hub base URL (e.g. https://mcp.sentinelx.app)")
+    parser.add_argument("--host-id", required=True)
+    parser.add_argument("--output", required=True, help="Path to write identity.json")
+    parser.add_argument(
+        "--mode",
+        choices=["browser", "paste"],
+        default="browser",
+        help="browser=local HTTP server captures token; paste=user copies token from web dashboard",
+    )
+    args = parser.parse_args()
+
+    if args.mode == "paste":
+        result = run_paste_mode(args.hub, args.host_id)
+    else:
+        result = run_browser_mode(args.hub, args.host_id)
 
     identity = {
-        "host_id": server.result.get("host_id", args.host_id),
-        "token": server.result["token"],
+        "host_id": result.get("host_id", args.host_id),
+        "token": result["token"],
         "hub": args.hub,
     }
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(identity, indent=2))
-    print(f"Identity written to {out_path}")
+    print(f"Identity written to {out_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
     main()
+

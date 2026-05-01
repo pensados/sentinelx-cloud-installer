@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# SentinelX core installer. Designed to be `curl -fsSL get.sentinelx.app | bash`-friendly.
+# SentinelX core installer.
+# Designed to be `curl -fsSL https://get.sentinelx.app | bash`-friendly.
+#
+# Environment overrides:
+#   SENTINELX_HUB_URL       Hub URL (default: https://mcp.sentinelx.app)
+#   SENTINELX_INSTALL_DIR   Install dir (default: /opt/sentinelx-cloud-core)
+#   SENTINELX_HOST_ID       Force a specific host_id (default: auto-generated)
+#   SENTINELX_CORE_REPO     Override the git repo URL
+#   SENTINELX_CORE_REF      Override the git ref (branch/tag/commit, default: main)
+#   SENTINELX_ENROLL_MODE   browser | paste (default: paste — works on headless)
 set -euo pipefail
 
 HUB_URL="${SENTINELX_HUB_URL:-https://mcp.sentinelx.app}"
 INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/opt/sentinelx-cloud-core}"
 ETC_DIR="/etc/sentinelx"
-RELEASE_TAG="${SENTINELX_VERSION:-latest}"
+CORE_REPO="${SENTINELX_CORE_REPO:-https://github.com/pensados/sentinelx-cloud-core.git}"
+CORE_REF="${SENTINELX_CORE_REF:-main}"
+ENROLL_MODE="${SENTINELX_ENROLL_MODE:-paste}"
 
 # --- pretty output -----------------------------------------------------------
 c_red=$(tput setaf 1 2>/dev/null || true)
@@ -28,13 +39,28 @@ case "$ARCH" in
 esac
 
 # Required tools
-for cmd in curl python3 systemctl; do
+for cmd in curl git python3 systemctl; do
     command -v "$cmd" >/dev/null || fatal "Missing required tool: $cmd"
 done
 
+# Need pip too — package install relies on it
+if ! python3 -c "import pip" >/dev/null 2>&1; then
+    fatal "python3 pip is required (try: apt install python3-pip)"
+fi
+
+info "SentinelX installer starting"
+info "  Hub:         $HUB_URL"
+info "  Install dir: $INSTALL_DIR"
+info "  Repo:        $CORE_REPO @ $CORE_REF"
+info "  Enroll mode: $ENROLL_MODE"
+
 # --- generate or reuse host_id -----------------------------------------------
 mkdir -p "$ETC_DIR"
-if [[ ! -f "$ETC_DIR/host_id" ]]; then
+if [[ -n "${SENTINELX_HOST_ID:-}" ]]; then
+    HOST_ID="$SENTINELX_HOST_ID"
+    echo "$HOST_ID" > "$ETC_DIR/host_id"
+    info "Using provided host_id: $HOST_ID"
+elif [[ ! -f "$ETC_DIR/host_id" ]]; then
     HOST_ID="host_$(cat /proc/sys/kernel/random/uuid | tr -d - | head -c 16)"
     echo "$HOST_ID" > "$ETC_DIR/host_id"
     chmod 644 "$ETC_DIR/host_id"
@@ -50,35 +76,81 @@ if ! id sentinelx >/dev/null 2>&1; then
     useradd --system --home-dir "$INSTALL_DIR" --shell /bin/false sentinelx
 fi
 
-# --- install core code -------------------------------------------------------
+# --- install core code via git clone -----------------------------------------
 info "Installing sentinelx-cloud-core to $INSTALL_DIR"
+
+# Clean install: remove anything that was there before
+if [[ -d "$INSTALL_DIR" ]]; then
+    rm -rf "$INSTALL_DIR"
+fi
 mkdir -p "$INSTALL_DIR"
 
-# In real life this fetches a release tarball from GitHub Releases.
-# For now we assume it's downloaded somehow:
-TARBALL_URL="https://github.com/pensados/sentinelx-cloud-core/releases/${RELEASE_TAG}/download/sentinelx-cloud-core-${ARCH}.tar.gz"
+# Shallow clone for speed and disk
+git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" "$INSTALL_DIR"
 
-if [[ "$RELEASE_TAG" == "latest" ]]; then
-    TARBALL_URL="https://github.com/pensados/sentinelx-cloud-core/releases/latest/download/sentinelx-cloud-core-${ARCH}.tar.gz"
-fi
+# Install in a venv to avoid polluting the system Python
+info "Setting up Python virtualenv"
+python3 -m venv "$INSTALL_DIR/.venv"
+"$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
+"$INSTALL_DIR/.venv/bin/pip" install --quiet "$INSTALL_DIR"
 
-curl -fsSL "$TARBALL_URL" | tar -xz -C "$INSTALL_DIR" --strip-components=1
 chown -R sentinelx:sentinelx "$INSTALL_DIR"
 
-# --- enroll with the hub -----------------------------------------------------
-info "Starting enrollment flow..."
-ENROLL_PY="$INSTALL_DIR/bin/sentinelx-enroll"
-if [[ ! -x "$ENROLL_PY" ]]; then
-    fatal "Missing enrollment script at $ENROLL_PY"
-fi
+# --- enroll ------------------------------------------------------------------
+ENROLL_PY="$INSTALL_DIR/../sentinelx-cloud-installer/enroll.py"
+# Above path won't exist — we need to also fetch the installer script.
+# Simpler: ship enroll.py inside core repo, or download it separately.
+# For now we download it on the fly from the installer repo.
+INSTALLER_ENROLL_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-installer/main/enroll.py"
+ENROLL_PY="$ETC_DIR/sentinelx-enroll.py"
+
+info "Downloading enrollment helper"
+curl -fsSL "$INSTALLER_ENROLL_URL" -o "$ENROLL_PY"
+chmod 755 "$ENROLL_PY"
 
 if [[ -f "$ETC_DIR/identity.json" ]]; then
-    warn "Existing identity.json found; skipping enrollment. Run sentinelx-enroll to re-enroll."
+    warn "Existing identity.json found at $ETC_DIR/identity.json"
+    warn "Skipping enrollment. Delete it and re-run to re-enroll."
 else
-    "$ENROLL_PY" --hub "$HUB_URL" --host-id "$HOST_ID" --output "$ETC_DIR/identity.json"
+    info "Starting enrollment ($ENROLL_MODE mode)"
+    python3 "$ENROLL_PY" \
+        --hub "$HUB_URL" \
+        --host-id "$HOST_ID" \
+        --output "$ETC_DIR/identity.json" \
+        --mode "$ENROLL_MODE"
     chmod 600 "$ETC_DIR/identity.json"
     chown sentinelx:sentinelx "$ETC_DIR/identity.json"
 fi
+
+# --- minimal config ----------------------------------------------------------
+if [[ ! -f "$ETC_DIR/config.yaml" ]]; then
+    info "Writing minimal config (echo, whoami, uname, hostname, date, ls, id, pwd)"
+    cat > "$ETC_DIR/config.yaml" <<EOF
+# SentinelX agent configuration. Edit to expand allowed commands.
+# See https://docs.sentinelx.app/agent-config for full reference.
+agent:
+  hostname_label: $(hostname)
+allowed_commands:
+  - echo
+  - whoami
+  - uname
+  - hostname
+  - date
+  - ls
+  - id
+  - pwd
+  - df -h
+  - free -h
+  - uptime
+  - cat /etc/os-release
+upload_base: /var/lib/sentinelx/uploads
+services: {}
+EOF
+    chmod 644 "$ETC_DIR/config.yaml"
+fi
+
+mkdir -p /var/lib/sentinelx/uploads
+chown -R sentinelx:sentinelx /var/lib/sentinelx
 
 # --- install systemd unit ----------------------------------------------------
 info "Installing systemd unit"
@@ -92,13 +164,13 @@ Wants=network-online.target
 Type=simple
 User=sentinelx
 Group=sentinelx
-ExecStart=$INSTALL_DIR/bin/sentinelx-cloud-core --hub $HUB_URL --identity $ETC_DIR/identity.json
+ExecStart=$INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\
+    --hub $HUB_URL \\
+    --identity $ETC_DIR/identity.json \\
+    --config $ETC_DIR/config.yaml
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$INSTALL_DIR /var/log/sentinelx
 
 [Install]
 WantedBy=multi-user.target
@@ -111,16 +183,22 @@ systemctl daemon-reload
 systemctl enable --now sentinelx-cloud-core.service
 
 # --- final status ------------------------------------------------------------
-sleep 1
+sleep 2
 if systemctl is-active --quiet sentinelx-cloud-core.service; then
     info "SentinelX is running."
     echo
     echo "  Status:   systemctl status sentinelx-cloud-core"
     echo "  Logs:     journalctl -u sentinelx-cloud-core -f"
     echo "  Hub URL:  $HUB_URL"
+    echo "  Host ID:  $HOST_ID"
+    echo "  Config:   $ETC_DIR/config.yaml"
     echo
-    info "Done. Add SentinelX in Claude → Settings → Connectors."
+    info "Done. Connect SentinelX in Claude.ai or ChatGPT settings → Connectors."
+    info "  Connector URL:  $HUB_URL/mcp/mcp"
 else
-    warn "Service did not start cleanly. Check 'journalctl -u sentinelx-cloud-core'."
+    warn "Service did not start cleanly."
+    warn "Check 'journalctl -u sentinelx-cloud-core -n 50'"
+    journalctl -u sentinelx-cloud-core -n 20 --no-pager
     exit 1
 fi
+
