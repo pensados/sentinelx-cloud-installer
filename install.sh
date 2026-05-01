@@ -3,7 +3,7 @@
 set -euo pipefail
 
 HUB_URL="${SENTINELX_HUB_URL:-https://mcp.sentinelx.app}"
-INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/opt/sentinelx-core}"
+INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/opt/sentinelx-cloud-core}"
 ETC_DIR="/etc/sentinelx"
 RELEASE_TAG="${SENTINELX_VERSION:-latest}"
 
@@ -51,15 +51,15 @@ if ! id sentinelx >/dev/null 2>&1; then
 fi
 
 # --- install core code -------------------------------------------------------
-info "Installing sentinelx-core to $INSTALL_DIR"
+info "Installing sentinelx-cloud-core to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
 # In real life this fetches a release tarball from GitHub Releases.
 # For now we assume it's downloaded somehow:
-TARBALL_URL="https://github.com/pensados/sentinelx-core/releases/${RELEASE_TAG}/download/sentinelx-core-${ARCH}.tar.gz"
+TARBALL_URL="https://github.com/pensados/sentinelx-cloud-core/releases/${RELEASE_TAG}/download/sentinelx-cloud-core-${ARCH}.tar.gz"
 
 if [[ "$RELEASE_TAG" == "latest" ]]; then
-    TARBALL_URL="https://github.com/pensados/sentinelx-core/releases/latest/download/sentinelx-core-${ARCH}.tar.gz"
+    TARBALL_URL="https://github.com/pensados/sentinelx-cloud-core/releases/latest/download/sentinelx-cloud-core-${ARCH}.tar.gz"
 fi
 
 curl -fsSL "$TARBALL_URL" | tar -xz -C "$INSTALL_DIR" --strip-components=1
@@ -82,7 +82,7 @@ fi
 
 # --- install systemd unit ----------------------------------------------------
 info "Installing systemd unit"
-cat > /etc/systemd/system/sentinelx-core.service <<EOF
+cat > /etc/systemd/system/sentinelx-cloud-core.service <<EOF
 [Unit]
 Description=SentinelX Core agent
 After=network-online.target
@@ -92,7 +92,7 @@ Wants=network-online.target
 Type=simple
 User=sentinelx
 Group=sentinelx
-ExecStart=$INSTALL_DIR/bin/sentinelx-core --hub $HUB_URL --identity $ETC_DIR/identity.json
+ExecStart=$INSTALL_DIR/bin/sentinelx-cloud-core --hub $HUB_URL --identity $ETC_DIR/identity.json
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -108,19 +108,19 @@ mkdir -p /var/log/sentinelx
 chown sentinelx:sentinelx /var/log/sentinelx
 
 systemctl daemon-reload
-systemctl enable --now sentinelx-core.service
+systemctl enable --now sentinelx-cloud-core.service
 
 # --- final status ------------------------------------------------------------
 sleep 1
-if systemctl is-active --quiet sentinelx-core.service; then
+if systemctl is-active --quiet sentinelx-cloud-core.service; then
     info "SentinelX is running."
     echo
-    echo "  Status:   systemctl status sentinelx-core"
-    echo "  Logs:     journalctl -u sentinelx-core -f"
+    echo "  Status:   systemctl status sentinelx-cloud-core"
+    echo "  Logs:     journalctl -u sentinelx-cloud-core -f"
     echo "  Hub URL:  $HUB_URL"
     echo
     info "Done. Add SentinelX in Claude → Settings → Connectors."
 else
-    warn "Service did not start cleanly. Check 'journalctl -u sentinelx-core'."
+    warn "Service did not start cleanly. Check 'journalctl -u sentinelx-cloud-core'."
     exit 1
 fi
