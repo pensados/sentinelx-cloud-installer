@@ -1,172 +1,108 @@
 # sentinelx-cloud-installer
 
-One-line installer for [`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core), the SentinelX agent.
+The one-line installer for SentinelX. This is what `https://get.sentinelx.app` serves.
 
 ```bash
 curl -fsSL https://get.sentinelx.app | sudo bash
 ```
 
-That's it. The script clones the agent, sets up a Python virtualenv, walks you through enrollment, and registers a systemd service that connects to the SentinelX hub at [`mcp.sentinelx.app`](https://mcp.sentinelx.app/healthz).
+Run that on any Linux host you want to operate from your LLM. The script clones
+[`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core), sets
+it up as a systemd service, and walks you through enrollment.
 
-Once installed, you can talk to your server through Claude.ai or ChatGPT — the SentinelX hub is exposed as an MCP connector.
+## Who this is for
 
----
+Anyone who wants to install the SentinelX agent on a Linux server and connect
+it to Claude.ai or ChatGPT via the SentinelX hub.
 
-## What is SentinelX?
+## What it does, step by step
 
-SentinelX lets you operate Linux servers from inside an LLM chat. You install a small agent on each server, the agent connects out to a hosted hub via WebSocket, and the hub appears as an MCP connector in Claude.ai and ChatGPT.
+1. **Prereq check** — confirms you're on Linux, running as root, with `git`,
+   `python3`, and `systemd` available.
+2. **System user** — creates an unprivileged `sentinelx` user that the agent
+   will run as.
+3. **Clone & venv** — fetches `sentinelx-cloud-core` to `/opt/sentinelx-cloud-core`
+   and builds a virtualenv there.
+4. **Config skeleton** — drops a starter `/etc/sentinelx/config.yaml` that you
+   can edit later to control which commands the agent will allow.
+5. **Enrollment** — opens an interactive enrollment flow:
+   - Prints a URL like `https://mcp.sentinelx.app/auth/dashboard/enroll?host_id=...`
+   - You open it in your browser, sign in with Google, copy the displayed
+     enrollment token, paste it back into the installer.
+6. **systemd unit** — installs and starts `sentinelx-cloud-core.service`. The
+   agent connects out to `mcp.sentinelx.app` and stays connected.
 
-You can then ask things like:
+After this completes, the host appears in your account on the SentinelX hub
+and you can target it from Claude.ai or ChatGPT.
 
-- "Show me `df -h` and `uptime` on my prod-web server"
-- "Restart nginx on my-vps and tell me when it's back"
-- "Check if there are any pending kernel updates across all my servers"
+## Connecting to your LLM
 
-The agent only runs commands that you've explicitly allowed in `/etc/sentinelx/config.yaml`. Nothing else is reachable.
+In Claude.ai or ChatGPT:
 
----
+1. Settings → Connectors → Add custom MCP
+2. URL: `https://mcp.sentinelx.app/mcp/mcp`
+3. Authorize with the same Google account you used during enrollment.
 
-## What this installer does
+You're done. Try asking your LLM:
 
-1. Generates a stable `host_id` for this machine and persists it to `/etc/sentinelx/host_id`.
-2. Creates a system user `sentinelx` to run the agent under (no shell, no home dir privileges).
-3. Clones [`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core) to `/opt/sentinelx-cloud-core`.
-4. Sets up a Python virtualenv at `/opt/sentinelx-cloud-core/.venv` and pip-installs the agent.
-5. Walks you through OAuth enrollment so the hub knows this host belongs to your account.
-6. Writes a minimal allowlist config to `/etc/sentinelx/config.yaml` (echo, whoami, uname, hostname, date, ls, id, pwd, df -h, free -h, uptime, cat /etc/os-release).
-7. Installs `sentinelx-cloud-core.service` and starts it.
+> *"List my SentinelX servers."*
+> *"Show uptime and disk usage on my-vps."*
 
----
+## Multiple servers
 
-## Enrollment modes
+Run the installer on each one. Hosts are bound to your account, and the LLM
+can target them by:
 
-The installer supports two flavors of OAuth enrollment.
+- **host_id** — the unique ID generated at install time
+- **hostname** — whatever the server reports (e.g. `web-prod-01`)
+- **label** — a custom alias you set later via `sentinel_set_host_label`
 
-### Paste mode (default — works on any server)
+If a name resolves to multiple hosts, the LLM is told which it is and asks
+you to disambiguate.
 
-```bash
-curl -fsSL https://get.sentinelx.app | sudo bash
-```
+## What you control
 
-The installer prints a URL. You open it in your browser (any browser, anywhere — your laptop, your phone), log in, copy the displayed token, and paste it into the installer prompt. Recommended for headless servers, VPSs, and anything you reach via SSH.
+The agent only runs what's allowed in `/etc/sentinelx/config.yaml`:
 
-### Browser mode
+- **`exec.allow`** — exact shell commands the LLM can run
+- **`services.allow`** — systemd units the LLM can manage
+- **`paths.allow_edit`** — files the LLM can read/write via `sentinel_edit`
 
-```bash
-curl -fsSL https://get.sentinelx.app | sudo SENTINELX_ENROLL_MODE=browser bash
-```
+A starter config is written at install time. Edit it to expand or restrict
+what your LLM can touch.
 
-The installer starts a one-shot HTTP listener on `localhost:<random-port>` and prints a URL. The OAuth flow redirects there with the token in the URL fragment, the page captures it via JavaScript, and POSTs it back to the listener. Works when:
+## Manual install
 
-- You're installing on the same machine you're sitting at, or
-- You've SSH-tunneled the port: `ssh -L 8765:localhost:8765 user@server`
-
----
-
-## Configuration
-
-All settings can be overridden by environment variables before running the installer:
-
-| Variable | Default | What it does |
-|---|---|---|
-| `SENTINELX_HUB_URL` | `https://mcp.sentinelx.app` | Hub URL the agent connects to |
-| `SENTINELX_INSTALL_DIR` | `/opt/sentinelx-cloud-core` | Where the agent gets installed |
-| `SENTINELX_HOST_ID` | auto-generated | Force a specific host_id |
-| `SENTINELX_CORE_REPO` | `https://github.com/pensados/sentinelx-cloud-core.git` | Git repo to clone |
-| `SENTINELX_CORE_REF` | `main` | Git ref (branch/tag/commit) |
-| `SENTINELX_ENROLL_MODE` | `paste` | `paste` or `browser` |
-
-### Example: pin a specific version
+If you'd rather not pipe a remote script into sudo:
 
 ```bash
-curl -fsSL https://get.sentinelx.app | sudo SENTINELX_CORE_REF=v0.2.0 bash
+curl -fsSL https://get.sentinelx.app/install.sh -o install.sh
+less install.sh                     # read it
+sudo bash install.sh                # then run it
 ```
 
-### Example: install in a custom location
-
-```bash
-curl -fsSL https://get.sentinelx.app | sudo SENTINELX_INSTALL_DIR=/srv/sentinelx bash
-```
-
----
-
-## After install
-
-```bash
-# Service status
-systemctl status sentinelx-cloud-core
-
-# Live logs
-journalctl -u sentinelx-cloud-core -f
-
-# Hub-side health
-curl https://mcp.sentinelx.app/healthz
-```
-
-To **expand the agent's allowed commands**, edit `/etc/sentinelx/config.yaml` and restart:
-
-```bash
-sudo systemctl restart sentinelx-cloud-core
-```
-
-To **rename your server** in the LLM chat (e.g. give it a friendly alias like `prod-web` instead of `host_0f56813c3e894ded`), just ask Claude or ChatGPT:
-
-> Set the label "prod-web" on my server with hostname my-vps
-
-The LLM will call `sentinel_set_host_label` for you.
-
----
-
-## Re-enrollment
-
-If you delete `/etc/sentinelx/identity.json` and re-run the installer, you'll get a fresh enrollment flow:
-
-```bash
-sudo rm /etc/sentinelx/identity.json
-curl -fsSL https://get.sentinelx.app | sudo bash
-```
-
-The host keeps its `host_id` (so any labels and history are preserved), but gets a new identity JWT.
-
----
+The script is tiny (~7 KB) and stdlib-only.
 
 ## Uninstall
 
 ```bash
 sudo systemctl disable --now sentinelx-cloud-core
+sudo rm -rf /opt/sentinelx-cloud-core
+sudo rm -rf /etc/sentinelx
+sudo userdel sentinelx
 sudo rm /etc/systemd/system/sentinelx-cloud-core.service
 sudo systemctl daemon-reload
-sudo rm -rf /opt/sentinelx-cloud-core /etc/sentinelx /var/log/sentinelx /var/lib/sentinelx
-sudo userdel sentinelx
 ```
 
----
+The host stops appearing in your hub account within seconds (the WebSocket
+disconnects). Operational logs about that host roll off after 30 days.
 
-## Files in this repo
+## Related
 
-- **`install.sh`** — the bash entrypoint that `curl | bash` runs
-- **`enroll.py`** — standalone Python script that drives the OAuth flow (stdlib-only, no pip)
-- **`scripts/`** — internal helpers (release, deploy)
-
-The installer is intentionally one bash file plus one Python file. No build step, no compiled artifacts.
-
----
-
-## Security notes
-
-- The installer runs as root because it creates a system user, installs a systemd service, and writes to `/etc/`. Audit `install.sh` before running, especially if you're cautious about `curl | bash`. The full source is in this repo and the served `install.sh` is byte-identical to what's pushed.
-- The OAuth flow uses PKCE (S256). The enrollment JWT is short-lived and bound to a specific `(user_id, host_id)` pair on the hub side.
-- The agent runs as the unprivileged `sentinelx` user. To run commands that need root, you'll need to give that user explicit sudoers entries — see [`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core) docs.
-
----
-
-## Related repos
-
-- [`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core) — the agent that runs on your server
-- [`sentinelx-cloud-protocol`](https://github.com/pensados/sentinelx-cloud-protocol) — message types shared between agent and hub
-
----
+- [`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core) — the agent itself
+- [`sentinelx-cloud-protocol`](https://github.com/pensados/sentinelx-cloud-protocol) — wire format spec
+- [Privacy Policy](https://get.sentinelx.app/privacy) · [Terms](https://get.sentinelx.app/terms)
 
 ## License
 
-Apache 2.0. See [`LICENSE`](./LICENSE).
+Apache 2.0
