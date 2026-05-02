@@ -197,12 +197,23 @@ fi
 
 # --- minimal config ----------------------------------------------------------
 if [[ ! -f "$ETC_DIR/config.yaml" ]]; then
-    info "Writing minimal config (echo, whoami, uname, hostname, date, ls, id, pwd)"
-    cat > "$ETC_DIR/config.yaml" <<EOF
+    # Use the rich example config shipped in the core repo as the starting
+    # point. It comes with ~85 commonly-needed commands organized by category,
+    # and a curated set of optional ones that the user can uncomment.
+    EXAMPLE_CONFIG="$INSTALL_DIR/config.example.yaml"
+    if [[ -f "$EXAMPLE_CONFIG" ]]; then
+        info "Installing rich starter config to $ETC_DIR/config.yaml"
+        info "  (~85 allowed commands by default. Edit to add/remove.)"
+        cp "$EXAMPLE_CONFIG" "$ETC_DIR/config.yaml"
+        # Inject the upload_base which the example doesn't include
+        echo "" >> "$ETC_DIR/config.yaml"
+        echo "# Where uploaded files are temporarily staged" >> "$ETC_DIR/config.yaml"
+        echo "upload_base: /var/lib/sentinelx/uploads" >> "$ETC_DIR/config.yaml"
+    else
+        # Fallback: minimal config in case core repo doesn't ship the example.
+        warn "$EXAMPLE_CONFIG not found, writing minimal fallback config"
+        cat > "$ETC_DIR/config.yaml" <<EOF
 # SentinelX agent configuration. Edit to expand allowed commands.
-# See https://docs.sentinelx.app/agent-config for full reference.
-agent:
-  hostname_label: $(hostname)
 allowed_commands:
   - echo
   - whoami
@@ -219,6 +230,7 @@ allowed_commands:
 upload_base: /var/lib/sentinelx/uploads
 services: {}
 EOF
+    fi
     chmod 644 "$ETC_DIR/config.yaml"
 fi
 
