@@ -12,6 +12,19 @@
 #   SENTINELX_SKIP_SUDO     Set to 1 to skip the sudoers helper
 set -euo pipefail
 
+# Anchor cwd to a stable, always-readable directory before doing anything
+# else. Reason: operators often run uninstall + reinstall back-to-back from
+# inside /opt/sentinelx-cloud-core. The uninstall `rm -rf` removes that
+# directory while the shell is still parked in it. Linux keeps the
+# "phantom" cwd entry (the shell's stored inode is gone but $PWD still
+# points there), and the very next subprocess that calls getcwd() — git,
+# python, anything — fails with "Unable to read current working directory".
+# That broke a real install during May 2026 review prep with a wall of
+# `job-working-directory: error retrieving current directory` messages.
+# Switching to / first guarantees getcwd() works regardless of what the
+# operator did before piping us into bash.
+cd / 2>/dev/null || true
+
 # When `curl | bash` is used, the script's $0 is "bash" (not a file path)
 # and stdin is the pipe carrying the script bytes. That stdin gets
 # inherited by every subprocess we spawn — most notably enroll.py, which
