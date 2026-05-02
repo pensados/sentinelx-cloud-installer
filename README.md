@@ -21,15 +21,20 @@ it to Claude.ai or ChatGPT via the SentinelX hub.
    `python3`, and `systemd` available.
 2. **System user** — creates an unprivileged `sentinelx` user that the agent
    will run as.
-3. **Clone & venv** — fetches `sentinelx-cloud-core` to `/opt/sentinelx-cloud-core`
+3. **Sudo setup** — by default, installs `/etc/sudoers.d/sentinelx` so the
+   agent can run privileged commands without a password. The real security
+   boundary is the allowlist in `/etc/sentinelx/config.yaml` — without that
+   sudo rule, the LLM can't restart services or edit `/etc/`. To skip this
+   step, set `SENTINELX_SKIP_SUDO=1`.
+4. **Clone & venv** — fetches `sentinelx-cloud-core` to `/opt/sentinelx-cloud-core`
    and builds a virtualenv there.
-4. **Config skeleton** — drops a starter `/etc/sentinelx/config.yaml` that you
+5. **Config skeleton** — drops a starter `/etc/sentinelx/config.yaml` that you
    can edit later to control which commands the agent will allow.
-5. **Enrollment** — opens an interactive enrollment flow:
+6. **Enrollment** — opens an interactive enrollment flow:
    - Prints a URL like `https://mcp.sentinelx.app/auth/dashboard/enroll?host_id=...`
    - You open it in your browser, sign in with Google, copy the displayed
      enrollment token, paste it back into the installer.
-6. **systemd unit** — installs and starts `sentinelx-cloud-core.service`. The
+7. **systemd unit** — installs and starts `sentinelx-cloud-core.service`. The
    agent connects out to `mcp.sentinelx.app` and stays connected.
 
 After this completes, the host appears in your account on the SentinelX hub
@@ -89,6 +94,7 @@ The script is tiny (~7 KB) and stdlib-only.
 sudo systemctl disable --now sentinelx-cloud-core
 sudo rm -rf /opt/sentinelx-cloud-core
 sudo rm -rf /etc/sentinelx
+sudo rm -f /etc/sudoers.d/sentinelx
 sudo userdel sentinelx
 sudo rm /etc/systemd/system/sentinelx-cloud-core.service
 sudo systemctl daemon-reload
