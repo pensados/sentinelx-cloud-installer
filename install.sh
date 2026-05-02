@@ -12,6 +12,12 @@
 #   SENTINELX_SKIP_SUDO     Set to 1 to skip the sudoers helper
 set -euo pipefail
 
+# When `set -e` triggers an exit, this trap fires before the script dies and
+# prints what line crashed and what command. Without this, install failures
+# look like "the script just stopped" — exactly the bug we hit during
+# initial deployment.
+trap 'rc=$?; echo ""; echo "[X] Install FAILED (exit=$rc) at line $LINENO"; echo "    Last command: $BASH_COMMAND"; echo "    State: $(ls -la /etc/sentinelx/ 2>&1 | head -5)"; echo ""; echo "    To finish manually, see the README or run with bash -x for verbose tracing."; exit $rc' ERR
+
 HUB_URL="${SENTINELX_HUB_URL:-https://mcp.sentinelx.app}"
 INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/opt/sentinelx-cloud-core}"
 ETC_DIR="/etc/sentinelx"
