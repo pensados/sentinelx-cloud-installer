@@ -255,11 +255,21 @@ mkdir -p "$INSTALL_DIR"
 # Shallow clone for speed and disk
 git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" "$INSTALL_DIR"
 
-# Install in a venv to avoid polluting the system Python
+# Install in a venv to avoid polluting the system Python.
+#
+# We use `pip install -e` (editable mode) so the venv's site-packages
+# imports the code DIRECTLY from $INSTALL_DIR/src rather than a separate
+# copy. The practical benefit: operators can update the agent with a
+#   cd $INSTALL_DIR && sudo -u sentinelx git pull && \
+#       sudo systemctl restart sentinelx-cloud-core
+# and the new code takes effect immediately. With a non-editable install
+# the new code lands in $INSTALL_DIR/src but the agent keeps loading the
+# stale copy from .venv/lib/.../site-packages until the package is
+# reinstalled — a footgun that bit us during the May 2026 reviews.
 info "Setting up Python virtualenv"
 "$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
-"$INSTALL_DIR/.venv/bin/pip" install --quiet "$INSTALL_DIR"
+"$INSTALL_DIR/.venv/bin/pip" install --quiet -e "$INSTALL_DIR"
 
 chown -R sentinelx:sentinelx "$INSTALL_DIR"
 
