@@ -27,6 +27,7 @@ c_rst=$(tput sgr0 2>/dev/null || true)
 
 info()  { echo "${c_grn}[+]${c_rst} $*"; }
 warn()  { echo "${c_yel}[!]${c_rst} $*"; }
+err()   { echo "${c_red}[!]${c_rst} $*" >&2; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
 # --- preflight ---------------------------------------------------------------
@@ -40,13 +41,58 @@ case "$ARCH" in
 esac
 
 # Required tools
-for cmd in curl git python3 systemctl; do
+for cmd in curl git systemctl; do
     command -v "$cmd" >/dev/null || fatal "Missing required tool: $cmd"
 done
 
-# Need pip too — package install relies on it
-if ! python3 -c "import pip" >/dev/null 2>&1; then
-    fatal "python3 pip is required (try: apt install python3-pip)"
+# Find a Python that meets the >=3.11 requirement.
+# Newer first (preferred), then fall back to the bare `python3`.
+PYTHON_BIN=""
+for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        ver=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
+        # Compare as ints: major*100 + minor must be >= 311
+        if [ -n "$ver" ]; then
+            major=$(echo "$ver" | cut -d. -f1)
+            minor=$(echo "$ver" | cut -d. -f2)
+            if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
+                PYTHON_BIN=$(command -v "$candidate")
+                break
+            fi
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    err "Python >=3.11 is required, but none was found on this system."
+    err ""
+    err "  On Ubuntu 22.04 / Debian 11 (which ship Python 3.10) install 3.11 with:"
+    err "    sudo add-apt-repository ppa:deadsnakes/ppa"
+    err "    sudo apt update"
+    err "    sudo apt install -y python3.11 python3.11-venv"
+    err ""
+    err "  On Ubuntu 24.04 / Debian 12+: Python 3.11+ is in the default repos:"
+    err "    sudo apt install -y python3.11 python3.11-venv"
+    err ""
+    err "  On RHEL/Fedora:"
+    err "    sudo dnf install -y python3.11"
+    err ""
+    err "  Then re-run this installer. It will auto-detect the new Python."
+    exit 1
+fi
+
+info "  Python:      $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
+
+# Need pip + venv for the chosen Python — package install relies on them
+if ! "$PYTHON_BIN" -c "import pip" >/dev/null 2>&1; then
+    err "$PYTHON_BIN does not have pip available."
+    err "  Install with: sudo apt install -y $(basename "$PYTHON_BIN")-venv"
+    exit 1
+fi
+if ! "$PYTHON_BIN" -c "import venv" >/dev/null 2>&1; then
+    err "$PYTHON_BIN does not have the venv module available."
+    err "  Install with: sudo apt install -y $(basename "$PYTHON_BIN")-venv"
+    exit 1
 fi
 
 info "SentinelX installer starting"
@@ -163,7 +209,7 @@ git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" "$INSTALL_DIR"
 
 # Install in a venv to avoid polluting the system Python
 info "Setting up Python virtualenv"
-python3 -m venv "$INSTALL_DIR/.venv"
+"$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install --quiet "$INSTALL_DIR"
 
@@ -186,7 +232,7 @@ if [[ -f "$ETC_DIR/identity.json" ]]; then
     warn "Skipping enrollment. Delete it and re-run to re-enroll."
 else
     info "Starting enrollment ($ENROLL_MODE mode)"
-    python3 "$ENROLL_PY" \
+    "$PYTHON_BIN" "$ENROLL_PY" \
         --hub "$HUB_URL" \
         --host-id "$HOST_ID" \
         --output "$ETC_DIR/identity.json" \
