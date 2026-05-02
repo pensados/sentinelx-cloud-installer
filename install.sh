@@ -12,6 +12,33 @@
 #   SENTINELX_SKIP_SUDO     Set to 1 to skip the sudoers helper
 set -euo pipefail
 
+# When `curl | bash` is used, the script's $0 is "bash" (not a file path)
+# and stdin is the pipe carrying the script bytes. That stdin gets
+# inherited by every subprocess we spawn — most notably enroll.py, which
+# needs to read the user's enrollment token. Even with the /dev/tty
+# fallback in enroll.py, having a half-consumed pipe as stdin can cause
+# bash itself to read EOF earlier than expected, killing the install
+# silently after enroll.py succeeds.
+#
+# Solution: detect that we were started via stdin pipe, write ourselves
+# to a tempfile, and re-exec from that file with a clean stdin. After
+# this, stdin is /dev/null (closed) and the script reads its lines from
+# disk, immune to whatever enroll.py or any other subprocess does to
+# stdin.
+if [ ! -t 0 ] && [ -z "${SENTINELX_INSTALLER_RELAUNCHED:-}" ]; then
+    # Heuristic: $0 is something like "bash" or "/bin/bash" rather than a
+    # real file path → we're being piped from curl.
+    if [ "$0" = "bash" ] || [ "$0" = "/bin/bash" ] || [ "$0" = "/usr/bin/bash" ] || [ ! -f "$0" ]; then
+        TMPSCRIPT=$(mktemp /tmp/sentinelx-installer.XXXXXX.sh)
+        cat > "$TMPSCRIPT"
+        chmod +x "$TMPSCRIPT"
+        export SENTINELX_INSTALLER_RELAUNCHED=1
+        # Re-exec with stdin closed. Any subprocess that needs user input
+        # has to use /dev/tty (which enroll.py already does as a fallback).
+        exec bash "$TMPSCRIPT" "$@" </dev/null
+    fi
+fi
+
 # When `set -e` triggers an exit, this trap fires before the script dies and
 # prints what line crashed and what command. Without this, install failures
 # look like "the script just stopped" — exactly the bug we hit during
