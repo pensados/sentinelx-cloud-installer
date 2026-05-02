@@ -51,34 +51,58 @@ for cmd in curl git systemctl; do
     command -v "$cmd" >/dev/null || fatal "Missing required tool: $cmd"
 done
 
-# Find a Python that meets the >=3.11 requirement.
-# Newer first (preferred), then fall back to the bare `python3`.
+# Find a Python that meets the >=3.11 requirement AND has pip + venv.
+# Some systems (e.g. Debian Trixie's python3.13) ship the interpreter in
+# /usr/bin but split pip and venv into separate apt packages, so a Python
+# can satisfy the version check while still being unusable for our purposes.
+# We test all three together: version, pip module, venv module. Only a
+# Python that passes all three is selected.
 PYTHON_BIN=""
+PYTHON_REJECTED=""  # accumulator for diagnostic message if nothing works
+
+check_python() {
+    local candidate="$1"
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+    local ver
+    ver=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
+    [ -n "$ver" ] || return 1
+    local major minor
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    [ "$major" -ge 3 ] && [ "$minor" -ge 11 ] || return 1
+    "$candidate" -c "import pip" >/dev/null 2>&1 || {
+        PYTHON_REJECTED="$PYTHON_REJECTED $candidate (no pip)"
+        return 1
+    }
+    "$candidate" -c "import venv" >/dev/null 2>&1 || {
+        PYTHON_REJECTED="$PYTHON_REJECTED $candidate (no venv)"
+        return 1
+    }
+    return 0
+}
+
 for candidate in python3.13 python3.12 python3.11 python3; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        ver=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")
-        # Compare as ints: major*100 + minor must be >= 311
-        if [ -n "$ver" ]; then
-            major=$(echo "$ver" | cut -d. -f1)
-            minor=$(echo "$ver" | cut -d. -f2)
-            if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
-                PYTHON_BIN=$(command -v "$candidate")
-                break
-            fi
-        fi
+    if check_python "$candidate"; then
+        PYTHON_BIN=$(command -v "$candidate")
+        break
     fi
 done
 
 if [ -z "$PYTHON_BIN" ]; then
-    err "Python >=3.11 is required, but none was found on this system."
+    err "No usable Python >=3.11 found on this system."
+    if [ -n "$PYTHON_REJECTED" ]; then
+        err "  Tried but rejected:$PYTHON_REJECTED"
+        err ""
+    fi
+    err "  Install Python 3.11 with pip and venv:"
     err ""
-    err "  On Ubuntu 22.04 / Debian 11 (which ship Python 3.10) install 3.11 with:"
-    err "    sudo add-apt-repository ppa:deadsnakes/ppa"
+    err "  On Ubuntu 22.04 / Debian 11 (which ship Python 3.10):"
+    err "    sudo add-apt-repository -y ppa:deadsnakes/ppa"
     err "    sudo apt update"
     err "    sudo apt install -y python3.11 python3.11-venv"
     err ""
-    err "  On Ubuntu 24.04 / Debian 12+: Python 3.11+ is in the default repos:"
-    err "    sudo apt install -y python3.11 python3.11-venv"
+    err "  On Ubuntu 24.04 / Debian 12+ (Python 3.11+ in default repos):"
+    err "    sudo apt install -y python3.11 python3.11-venv python3-pip"
     err ""
     err "  On RHEL/Fedora:"
     err "    sudo dnf install -y python3.11"
@@ -89,17 +113,8 @@ fi
 
 info "  Python:      $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
 
-# Need pip + venv for the chosen Python — package install relies on them
-if ! "$PYTHON_BIN" -c "import pip" >/dev/null 2>&1; then
-    err "$PYTHON_BIN does not have pip available."
-    err "  Install with: sudo apt install -y $(basename "$PYTHON_BIN")-venv"
-    exit 1
-fi
-if ! "$PYTHON_BIN" -c "import venv" >/dev/null 2>&1; then
-    err "$PYTHON_BIN does not have the venv module available."
-    err "  Install with: sudo apt install -y $(basename "$PYTHON_BIN")-venv"
-    exit 1
-fi
+# Note: pip and venv availability are already verified by check_python() above,
+# so we don't repeat those checks here.
 
 info "SentinelX installer starting"
 info "  Hub:         $HUB_URL"
@@ -315,6 +330,26 @@ EOF
 
 mkdir -p /var/log/sentinelx
 chown sentinelx:sentinelx /var/log/sentinelx
+
+# Detect whether we have a working systemd. Rare environments (Docker
+# containers without an init, WSL1, ChromeOS Crostini, some minimal LXC
+# templates) ship `systemctl` but can't actually talk to PID 1.
+# We probe by trying a harmless query — if systemd-as-PID-1 isn't there,
+# this returns non-zero and prints "System has not been booted with systemd".
+if ! systemctl list-units --type=service --no-pager >/dev/null 2>&1; then
+    warn "systemd doesn't appear to be running on this system."
+    warn "Skipping systemctl steps. The agent is installed but won't auto-start."
+    warn ""
+    warn "To run it once manually:"
+    warn "  sudo -u sentinelx $INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\"
+    warn "      --hub $HUB_URL \\"
+    warn "      --identity $ETC_DIR/identity.json \\"
+    warn "      --config $ETC_DIR/config.yaml"
+    warn ""
+    warn "If you DO have systemd, check the unit at:"
+    warn "  /etc/systemd/system/sentinelx-cloud-core.service"
+    exit 0
+fi
 
 systemctl daemon-reload
 systemctl enable --now sentinelx-cloud-core.service
