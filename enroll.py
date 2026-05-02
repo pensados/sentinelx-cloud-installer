@@ -168,7 +168,28 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
     print(file=sys.stderr)
 
     print("Paste enrollment token: ", file=sys.stderr, end="", flush=True)
+
+    # Read the token. If we were started via `curl | bash` then sys.stdin is
+    # the install script itself (already consumed) and reading it returns "".
+    # In that case fall back to reading from the controlling terminal directly,
+    # which is the same source the user is typing into.
     token = sys.stdin.readline().strip()
+    if not token and sys.stdin.isatty() is False:
+        try:
+            with open("/dev/tty", "r") as tty:
+                token = tty.readline().strip()
+        except OSError:
+            # No controlling terminal (CI, container without -it, etc.)
+            raise SystemExit(
+                "No token entered.\n"
+                "\n"
+                "Hint: when running via 'curl ... | sudo bash' the installer cannot\n"
+                "read your input on systems without a controlling terminal.\n"
+                "Try the download-first method instead:\n"
+                "\n"
+                "  curl -fsSL https://get.sentinelx.app -o /tmp/sentinelx-install.sh\n"
+                "  sudo bash /tmp/sentinelx-install.sh\n"
+            )
 
     if not token:
         raise SystemExit("No token entered.")
