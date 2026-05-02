@@ -349,7 +349,21 @@ ExecStart=$INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\
     --config $ETC_DIR/config.yaml
 Restart=always
 RestartSec=5
-NoNewPrivileges=true
+
+# NOTE: We deliberately DO NOT set NoNewPrivileges=true here.
+# The agent's allowlist intentionally permits commands like \`sudo cat\`,
+# \`sudo systemctl status\`, etc., for read-only inspection of root-owned
+# files and services. NoNewPrivileges blocks all setuid escalation and
+# would silently break those — the operator would see "permission denied"
+# from sudo despite the sudoers helper being installed correctly.
+#
+# Defense-in-depth is provided by:
+#   1. Running as a system user 'sentinelx' (no shell, no home, no login)
+#   2. The allowlist in /etc/sentinelx/config.yaml — only listed commands
+#      can run, and only with their listed prefixes
+#   3. The sudoers helper at /etc/sudoers.d/sentinelx — only allowed
+#      commands can be run via sudo
+# Removing NoNewPrivileges does not weaken any of these.
 
 [Install]
 WantedBy=multi-user.target
