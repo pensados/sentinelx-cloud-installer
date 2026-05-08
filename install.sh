@@ -346,6 +346,16 @@ allowed_commands:
   - cat /etc/os-release
 upload_base: /var/lib/sentinelx/uploads
 services: {}
+
+# SSRF defense for upload_file's file_url. Empty allowlist below means
+# file_url is effectively disabled. Add hosts you trust the agent to
+# fetch from (your own services only — see config.example.yaml for
+# the full explanation).
+security:
+  trusted_fetch_hosts:
+    - drop.pensa.ar
+    - get.sentinelx.app
+  file_url_timeout_seconds: 15
 EOF
     fi
     chmod 644 "$ETC_DIR/config.yaml"
