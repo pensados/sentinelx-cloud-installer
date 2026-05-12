@@ -69,7 +69,31 @@ ENROLL_MODE="${SENTINELX_ENROLL_MODE:-paste}"
 c_red=$(tput setaf 1 2>/dev/null || true)
 c_grn=$(tput setaf 2 2>/dev/null || true)
 c_yel=$(tput setaf 3 2>/dev/null || true)
+c_cyan=$(tput setaf 6 2>/dev/null || true)
+c_bold=$(tput bold 2>/dev/null || true)
 c_rst=$(tput sgr0 2>/dev/null || true)
+
+# --- banner ------------------------------------------------------------------
+# Printed once at startup, AFTER the stdin-pipe re-exec dance above (so it
+# only appears in the relaunched run, not twice). tput-based colors degrade
+# gracefully on dumb terminals: if tput fails, the vars are empty strings
+# and the banner just prints in plain text.
+echo "${c_cyan}"
+cat << 'EOF'
+  ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     ██╗  ██╗
+  ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     ╚██╗██╔╝
+  ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║      ╚███╔╝
+  ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║      ██╔██╗
+  ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗██╔╝ ██╗
+  ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝  ╚═╝
+EOF
+echo "${c_rst}"
+echo "  ${c_bold}Cloud Installer${c_rst} — connect this server to mcp.sentinelx.app"
+echo "  via the Model Context Protocol."
+echo ""
+echo "  ${c_yel}What you'll get:${c_rst} a SentinelX agent that lets AI assistants"
+echo "  (Claude, ChatGPT, etc.) operate this server through MCP."
+echo ""
 
 info()  { echo "${c_grn}[+]${c_rst} $*"; }
 warn()  { echo "${c_yel}[!]${c_rst} $*"; }
