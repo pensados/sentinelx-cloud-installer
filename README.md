@@ -42,11 +42,14 @@ and you can target it from Claude.ai or ChatGPT.
 
 ## Connecting to your LLM
 
-In Claude.ai or ChatGPT:
+**ChatGPT** — install [SentinelX from the app directory](https://chatgpt.com/apps/sentinelx/asdk_app_69f63e01766881919640f03b5e7912a5),
+click **Connect**, and authorize with the same Google account you used during
+enrollment. No URL to copy.
 
-1. Settings → Connectors → Add custom MCP
-2. URL: `https://mcp.sentinelx.app/mcp/mcp`
-3. Authorize with the same Google account you used during enrollment.
+**Claude.ai** — Settings → Connectors → Add custom MCP:
+
+1. URL: `https://mcp.sentinelx.app/mcp/mcp`
+2. Authorize with the same Google account you used during enrollment.
 
 You're done. Try asking your LLM:
 
