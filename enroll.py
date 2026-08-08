@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import select
 import socket
 import sys
 import threading
@@ -34,6 +35,8 @@ from pathlib import Path
 
 # How long we wait for the user to finish the OAuth dance (browser mode)
 TIMEOUT_SECONDS = 600
+# Max wait for the pasted token before giving up (never hang forever).
+TOKEN_READ_TIMEOUT = 180
 
 # Page returned to the browser at /. Reads the URL fragment (which can't be
 # read server-side) and POSTs it back to /finish.
@@ -177,22 +180,31 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
     if not token and sys.stdin.isatty() is False:
         try:
             with open("/dev/tty", "r") as tty:
-                token = tty.readline().strip()
+                # Guard the read with select(): under `sudo` with
+                # `Defaults use_pty` (the default on modern Ubuntu) /dev/tty is
+                # sudo's pseudo-terminal and a plain readline() blocks forever.
+                # select() waits for real input and times out cleanly instead of
+                # leaving the user stuck at the prompt with no way out.
+                ready, _, _ = select.select([tty], [], [], TOKEN_READ_TIMEOUT)
+                token = tty.readline().strip() if ready else ""
         except OSError:
             # No controlling terminal (CI, container without -it, etc.)
-            raise SystemExit(
-                "No token entered.\n"
-                "\n"
-                "Hint: when running via 'curl ... | sudo bash' the installer cannot\n"
-                "read your input on systems without a controlling terminal.\n"
-                "Try the download-first method instead:\n"
-                "\n"
-                "  curl -fsSL https://get.sentinelx.app -o /tmp/sentinelx-install.sh\n"
-                "  sudo bash /tmp/sentinelx-install.sh\n"
-            )
+            token = ""
 
     if not token:
-        raise SystemExit("No token entered.")
+        raise SystemExit(
+            "No token entered.\n"
+            "\n"
+            "If the prompt stalled and nothing happened when you pasted: your\n"
+            "`sudo` likely uses `Defaults use_pty` (the default on modern Ubuntu),\n"
+            "which breaks the interactive token prompt. The cleanest fix is to run\n"
+            "as root so `sudo` isn't in the pipe:\n"
+            "\n"
+            "  sudo -i\n"
+            "  curl -fsSL https://get.sentinelx.app | bash\n"
+            "\n"
+            "(Pass SENTINELX_HOST_ID=host_xxx to reuse this host's id.)\n"
+        )
     if token.count(".") != 2:
         raise SystemExit("Token doesn't look like a JWT (expected 3 segments).")
 

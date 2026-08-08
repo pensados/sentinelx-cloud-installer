@@ -326,6 +326,16 @@ if [[ -f "$ETC_DIR/identity.json" ]]; then
     warn "Existing identity.json found at $ETC_DIR/identity.json"
     warn "Skipping enrollment. Delete it and re-run to re-enroll."
 else
+    # Preflight: the interactive token prompt hangs when `sudo` uses
+    # `Defaults use_pty` (default on modern Ubuntu). Warn up front with the
+    # clean workaround so a stall is never a silent mystery.
+    if [ -n "${SUDO_USER:-}" ] \
+        && grep -REqs '^[[:space:]]*Defaults[^!]*use_pty' /etc/sudoers /etc/sudoers.d 2>/dev/null; then
+        warn "Your sudo uses 'Defaults use_pty'. If the token prompt below stalls"
+        warn "after you paste, press Ctrl-C and re-run as root (no sudo in the pipe):"
+        warn "    sudo -i"
+        warn "    curl -fsSL https://get.sentinelx.app | bash"
+    fi
     info "Starting enrollment ($ENROLL_MODE mode)"
     "$PYTHON_BIN" "$ENROLL_PY" \
         --hub "$HUB_URL" \
