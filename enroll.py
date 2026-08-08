@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import select
+import signal
 import socket
 import sys
 import threading
@@ -178,17 +179,26 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
     # which is the same source the user is typing into.
     token = sys.stdin.readline().strip()
     if not token and sys.stdin.isatty() is False:
+        # Root cause of the classic hang: under `sudo` with `Defaults use_pty`
+        # (the default on modern Ubuntu) this process is a background job on
+        # sudo's pty, so reading the controlling terminal raises SIGTTIN — which
+        # by default STOPS the process (State T) and freezes the whole installer
+        # forever. Ignoring SIGTTIN makes the read fail fast with EIO instead,
+        # which we catch below and turn into a clear, actionable message. (The
+        # keyboard genuinely isn't reachable in this setup, so failing cleanly
+        # and pointing at the run-as-root workaround is the best we can do.)
+        try:
+            signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass  # not the main thread / unsupported — best effort
         try:
             with open("/dev/tty", "r") as tty:
-                # Guard the read with select(): under `sudo` with
-                # `Defaults use_pty` (the default on modern Ubuntu) /dev/tty is
-                # sudo's pseudo-terminal and a plain readline() blocks forever.
-                # select() waits for real input and times out cleanly instead of
-                # leaving the user stuck at the prompt with no way out.
+                # select() also guards a readable-but-slow tty; SIGTTIN handling
+                # above is what prevents the freeze in the use_pty case.
                 ready, _, _ = select.select([tty], [], [], TOKEN_READ_TIMEOUT)
                 token = tty.readline().strip() if ready else ""
         except OSError:
-            # No controlling terminal (CI, container without -it, etc.)
+            # EIO (background read under use_pty) or no controlling terminal.
             token = ""
 
     if not token:
