@@ -463,8 +463,14 @@ if systemctl is-active --quiet sentinelx-cloud-core.service; then
     echo "  Host ID:  $HOST_ID"
     echo "  Config:   $ETC_DIR/config.yaml"
     echo
-    info "Done. Connect SentinelX in Claude.ai or ChatGPT settings → Connectors."
-    info "  Connector URL:  $HUB_URL/mcp/mcp"
+    info "One step left — connect SentinelX to your AI assistant:"
+    echo
+    echo "  Connector URL:  $HUB_URL/mcp/mcp"
+    echo
+    echo "  Claude:   Settings → Connectors → Add custom connector → paste the URL"
+    echo "  ChatGPT:  https://chatgpt.com/apps/sentinelx/asdk_app_69f63e01766881919640f03b5e7912a5"
+    echo
+    echo "  Full guide:  https://sentinelx.app/#setup"
 else
     warn "Service did not start cleanly."
     warn "Check 'journalctl -u sentinelx-cloud-core -n 50'"
