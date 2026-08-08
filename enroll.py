@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import select
 import signal
 import socket
 import sys
@@ -36,8 +35,6 @@ from pathlib import Path
 
 # How long we wait for the user to finish the OAuth dance (browser mode)
 TIMEOUT_SECONDS = 600
-# Max wait for the pasted token before giving up (never hang forever).
-TOKEN_READ_TIMEOUT = 180
 
 # Page returned to the browser at /. Reads the URL fragment (which can't be
 # read server-side) and POSTs it back to /finish.
@@ -193,10 +190,9 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
             pass  # not the main thread / unsupported — best effort
         try:
             with open("/dev/tty", "r") as tty:
-                # select() also guards a readable-but-slow tty; SIGTTIN handling
-                # above is what prevents the freeze in the use_pty case.
-                ready, _, _ = select.select([tty], [], [], TOKEN_READ_TIMEOUT)
-                token = tty.readline().strip() if ready else ""
+                # With SIGTTIN ignored this fails fast with EIO under use_pty
+                # (keyboard unreachable), and blocks normally for a real paste.
+                token = tty.readline().strip()
         except OSError:
             # EIO (background read under use_pty) or no controlling terminal.
             token = ""
