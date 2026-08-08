@@ -56,7 +56,29 @@ fi
 # prints what line crashed and what command. Without this, install failures
 # look like "the script just stopped" — exactly the bug we hit during
 # initial deployment.
-trap 'rc=$?; echo ""; echo "[X] Install FAILED (exit=$rc) at line $LINENO"; echo "    Last command: $BASH_COMMAND"; echo "    State: $(ls -la /etc/sentinelx/ 2>&1 | head -5)"; echo ""; echo "    To finish manually, see the README or run with bash -x for verbose tracing."; exit $rc' ERR
+on_error() {
+    local rc="$1" line="$2" cmd="$3"
+    echo ""
+    echo "[X] Install FAILED (exit=$rc) at line $line"
+    echo "    Last command: $cmd"
+    echo "    State: $(ls -la /etc/sentinelx/ 2>&1 | head -5)"
+    echo ""
+    # If enrollment is what failed, the overwhelmingly likely cause on modern
+    # Ubuntu is the sudo+use_pty token-prompt issue. Make the fix that works
+    # the LAST thing the user reads, not a generic "see the README".
+    if printf '%s' "$cmd" | grep -qi "enroll"; then
+        echo "    Enrollment couldn't read your token. On modern Ubuntu (sudo with"
+        echo "    'Defaults use_pty') the interactive prompt can't receive input when"
+        echo "    sudo is in the pipe. Re-run as root instead — this works:"
+        echo ""
+        echo "        sudo -i"
+        echo "        curl -fsSL https://get.sentinelx.app | bash"
+    else
+        echo "    To finish manually, see the README or run with bash -x for verbose tracing."
+    fi
+    exit "$rc"
+}
+trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 HUB_URL="${SENTINELX_HUB_URL:-https://mcp.sentinelx.app}"
 INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/opt/sentinelx-cloud-core}"
