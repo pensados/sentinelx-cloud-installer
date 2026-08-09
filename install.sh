@@ -419,6 +419,785 @@ services:
   sentinelx-cloud-core:
     actions: [status, restart, is-active, is-enabled]
 
+playbooks:
+
+  add_allowed_command:
+    description: |
+      How to add a new command to this host's allowlist persistently.
+    when: |
+      The user asks to allow a new command on this host (e.g. "let me run
+      htop", "add ncdu to the allowlist", "I need ripgrep here"). Use this
+      playbook to extend the policy permanently. For one-off needs,
+      sentinel_script_run is usually a better fit.
+    steps:
+      - "Read the current config to confirm the file path and locate the
+         allowed_commands section: call sentinel_exec with command 'sudo
+         cat /etc/sentinelx/config.yaml'."
+      - "Use sentinel_edit in 'replace' mode to insert the new command
+         under the allowed_commands list. Anchor the edit on an existing
+         '  - <something>' line that's adjacent to where the new entry
+         logically belongs (alphabetical or by category). Pass sudo=true
+         since /etc/sentinelx is root-owned. Use validator_preset='yaml' so
+         the edit is rejected if it produces invalid YAML."
+      - "Reload the agent so the new policy takes effect. Two paths,
+         depending on whether 'sentinelx-cloud-core' is declared in
+         this same config under services:
+         (a) if declared: sentinel_service action='restart'
+             service='sentinelx-cloud-core'. The WS session will drop
+             when the agent restarts itself; this is expected and the
+             agent reconnects automatically.
+         (b) if NOT declared: ask the operator to run on a terminal
+             'sudo systemctl restart sentinelx-cloud-core' once. After
+             that one-time bootstrap, declaring sentinelx-cloud-core in
+             services lets future restarts use path (a) without manual
+             intervention. The default config.example.yaml ships with
+             this service declared, so path (a) is the typical case."
+      - "Verify the change took effect by calling sentinel_capabilities and
+         confirming the new command appears in allowed_commands. If it
+         doesn't, the agent didn't reload — check the journal with
+         sentinel_exec 'sudo journalctl -u sentinelx-cloud-core -n 30'."
+    requires:
+      - "sudo access on /etc/sentinelx/config.yaml (set up by the installer)."
+      - "Either: 'sentinelx-cloud-core' declared as a managed service in this
+         same config (the default config.example.yaml ships it), OR a way to
+         run 'sudo systemctl restart sentinelx-cloud-core' on a real terminal
+         for the one-time bootstrap. Once the service is declared and the
+         agent has loaded the new policy, future restarts can be done via
+         sentinel_service without operator intervention."
+    notes:
+      - "If the user only needs the command for a single invocation, prefer
+         sentinel_script_run over modifying the policy. Scripts run inside
+         a subshell where every command is still allowlist-checked, so this
+         is not a way to bypass policy — it's a way to compose allowed
+         commands without persisting the new entry."
+      - "Avoid adding commands that grant broad privilege escalation (su,
+         chsh, visudo, unrestricted sudo, etc.) without warning the user.
+         The whole point of the allowlist is to be conservative."
+      - "Allowed commands are matched as PREFIXES, not exact strings. So
+         'sudo cat' allows 'sudo cat /etc/passwd' but NOT 'sudo cattool'.
+         When adding a new entry, think about what completions of that
+         prefix should be reachable."
+
+  add_allowed_read_path:
+    description: |
+      How to add a new directory to this host's file_ops read allowlist
+      persistently, so sentinel_read / sentinel_list / sentinel_search can
+      operate under it.
+    when: |
+      The user asks to let the assistant read, list, or search a directory
+      that is currently rejected with 'path_not_allowed' (e.g. "let me read
+      files under /data", "I want you to be able to search /srv/app", "add
+      /home/me/projects to what you can see"). Use this playbook to extend
+      file_ops.allowed_read_paths permanently. This is the read-only
+      counterpart to add_allowed_command.
+    steps:
+      - "Confirm what the user actually wants exposed. allowed_read_paths
+         entries are PREFIXES: adding '/data' makes everything under
+         /data readable by sentinel_read/list/search. If the user names a
+         single file, add its parent directory and tell them the whole
+         directory becomes readable, not just that file. If they name a
+         broad path (/home, /, /etc on a shared box), pause and confirm —
+         see the notes below."
+      - "Read the current config to confirm the file path and locate the
+         file_ops section: call sentinel_exec with command 'sudo cat
+         /etc/sentinelx/config.yaml'. If there is no file_ops block yet,
+         this playbook still applies — you will be creating it."
+      - "Use sentinel_edit in 'replace' mode to add the new entry under
+         file_ops.allowed_read_paths. Anchor the edit on an existing
+         '    - <path>' line in that list. If the file_ops block does not
+         exist at all, add the whole block (file_ops: / allowed_read_paths:
+         / the entry) anchored on a stable nearby line such as the end of
+         the security block. Pass sudo=true since /etc/sentinelx is
+         root-owned. Use validator_preset='yaml' so the edit is rejected
+         if it produces invalid YAML."
+      - "Reload the agent so the new policy takes effect. Two paths,
+         depending on whether 'sentinelx-cloud-core' is declared in this
+         same config under services:
+         (a) if declared: sentinel_service action='restart'
+             service='sentinelx-cloud-core'. The WS session will drop
+             when the agent restarts itself; this is expected and the
+             agent reconnects automatically.
+         (b) if NOT declared: ask the operator to run on a terminal
+             'sudo systemctl restart sentinelx-cloud-core' once. The
+             default config.example.yaml ships with this service
+             declared, so path (a) is the typical case."
+      - "Verify the change took effect by calling sentinel_capabilities and
+         confirming the new path appears under file_ops.allowed_read_paths.
+         Then do a positive check: call sentinel_list on the new path and
+         confirm it no longer returns 'path_not_allowed'. If it still does,
+         the agent didn't reload — check the journal with sentinel_exec
+         'sudo journalctl -u sentinelx-cloud-core -n 30'."
+    requires:
+      - "sudo access on /etc/sentinelx/config.yaml (set up by the installer)."
+      - "Either: 'sentinelx-cloud-core' declared as a managed service in this
+         same config (the default config.example.yaml ships it), OR a way to
+         run 'sudo systemctl restart sentinelx-cloud-core' on a real terminal
+         for the one-time bootstrap."
+    notes:
+      - "allowed_read_paths is matched as PREFIXES, after canonicalizing the
+         requested path (symlinks resolved, '..' collapsed). Adding '/data'
+         reaches everything under /data; it does NOT reach '/data-private'
+         (no shared prefix boundary). Think about what the prefix opens up."
+      - "This only affects the read-only primitives (sentinel_read,
+         sentinel_list, sentinel_search). It does NOT grant exec, edit, or
+         any write capability. It is strictly additive read visibility."
+      - "Be cautious with broad paths. Adding '/home' on a multi-user or
+         personal machine exposes everyone's personal files to recursive
+         search; adding '/' exposes the whole filesystem (still bounded by
+         the agent user's unix permissions, but that is a weak second line,
+         not a real boundary). When the user asks for a broad path, confirm
+         they understand the scope before applying the edit. The whole point
+         of the allowlist is to be a deliberate, narrow boundary."
+      - "If the user only needs to read something once, it may not be worth
+         a permanent policy change — but unlike commands, there is no
+         one-off read primitive, so a config change is the only path. Keep
+         the entry as narrow as the use case allows."
+
+  update_sentinelx_code:
+    description: |
+      Update the SentinelX agent on this host to the latest commit on main.
+    when: |
+      The user asks to update, upgrade, or pull the latest version of
+      SentinelX on this host (e.g. "update sentinelx", "is there a new
+      version of the agent?", "pull the latest"). This playbook handles
+      the AGENT CODE only — config changes are handled separately by
+      sync_sentinelx_config.
+    steps:
+      - "Check the current commit with sentinel_exec: 'cd
+         /opt/sentinelx-cloud-core && sudo -u sentinelx git log --oneline -1'.
+         Note the SHA. This is what we'll be moving away from."
+      - "Fetch and compare with sentinel_exec: 'cd /opt/sentinelx-cloud-core
+         && sudo -u sentinelx git fetch origin main && sudo -u sentinelx
+         git log HEAD..origin/main --oneline'. If the output is EMPTY, the
+         agent is already up to date — STOP HERE and tell the user. If
+         non-empty, summarize the incoming commits before pulling."
+      - "Check pip install mode with sentinel_exec: 'sudo
+         /opt/sentinelx-cloud-core/.venv/bin/pip show sentinelx-cloud-core
+         | grep -E \"Editable|Location\"'. If 'Editable project location:'
+         is present, the install is editable and a git pull is sufficient.
+         If absent, pip reinstall will be required after the pull (older
+         installs predate commit 030190c which switched the installer to
+         editable mode)."
+      - "Check whether new dependencies are needed with sentinel_exec: 'cd
+         /opt/sentinelx-cloud-core && sudo -u sentinelx git diff
+         HEAD..origin/main --name-only | grep -E
+         \"pyproject|setup\\.py|setup\\.cfg|requirements\"'. If output is
+         non-empty, pip reinstall will be needed even on editable installs
+         (new deps to fetch). If empty, code-only update."
+      - "Pull with sentinel_exec: 'cd /opt/sentinelx-cloud-core && sudo -u
+         sentinelx git pull --ff-only origin main'. If --ff-only fails, the
+         working tree has local changes — STOP and tell the user; this is
+         not a routine update path and probably needs human review."
+      - "(Conditional) If step 3 said NOT editable OR step 4 found
+         pyproject changes, reinstall with sentinel_exec: 'sudo
+         /opt/sentinelx-cloud-core/.venv/bin/pip install -e
+         /opt/sentinelx-cloud-core'. Otherwise, skip this step."
+      - "Restart the agent. Two paths (same as add_allowed_command):
+         (a) if sentinelx-cloud-core is declared in services:
+             sentinel_service action='restart' service='sentinelx-cloud-core'.
+             The WS session will drop while the agent restarts itself; this
+             is expected. The agent reconnects to the hub automatically.
+         (b) if NOT declared: ask the user to run on a real terminal: 'sudo
+             systemctl restart sentinelx-cloud-core'."
+      - "Verify with sentinel_capabilities. The agent should respond and
+         the response should reflect any new capabilities. If capabilities
+         errors out, the new version may have a startup bug — check the
+         journal with sentinel_exec: 'sudo journalctl -u sentinelx-cloud-core
+         -n 30 --no-pager'."
+      - "(Optional follow-up) Mention to the user that config.example.yaml
+         may have new playbooks, services, or commands not yet in their
+         /etc/sentinelx/config.yaml. Offer to walk through them via the
+         sync_sentinelx_config playbook. Don't run that automatically — the
+         user decides whether to adopt new config defaults."
+    requires:
+      - "sudo access on /opt/sentinelx-cloud-core (set up by the installer)."
+      - "git, pip, journalctl in the allowlist (all in the default config)."
+      - "Either sentinelx-cloud-core declared in services for self-restart,
+         or operator availability for a one-time bootstrap restart on a
+         terminal."
+    notes:
+      - "This playbook handles the HAPPY PATH for a recent install. It does
+         NOT handle: custom branches or forks, working trees with local
+         modifications, agent versions older than the editable-mode
+         migration with non-trivial schema changes. Those need human
+         review."
+      - "Updates to /etc/sentinelx/config.yaml are NOT handled here. The
+         user's config is independent of the repo's config.example.yaml —
+         git pull does NOT modify /etc/sentinelx/config.yaml. To pick up
+         new playbooks, services, or commands shipped in the example, use
+         sync_sentinelx_config."
+      - "Bootstrap problem: the FIRST time this playbook runs on a host
+         that didn't previously have sentinelx-cloud-core declared in
+         services, step 7(b) requires manual intervention. After that
+         one-time bootstrap, every future run goes through 7(a) without
+         operator help."
+      - "Rollback: this playbook does not handle rolling back an update.
+         If something breaks after an update, the operator can manually
+         'git reset --hard <previous-commit>' in /opt/sentinelx-cloud-core
+         and restart. That diagnostic step is intentionally human-driven."
+
+  sync_sentinelx_config:
+    description: |
+      Help the user adopt new options from /opt/sentinelx-cloud-core/config.example.yaml
+      into their /etc/sentinelx/config.yaml without overwriting their
+      customizations. Interactive by design.
+    when: |
+      The user asks about new playbooks, new services, or new options
+      after an update (e.g. "are there new playbooks I'm missing?", "sync
+      my config with the latest example", "show me what's new in the
+      config"). The user's local /etc/sentinelx/config.yaml is NEVER
+      touched by git pull, so improvements to config.example.yaml don't
+      propagate automatically. This playbook helps adopt them selectively.
+    steps:
+      - "Verify the repo is up to date by checking that
+         /opt/sentinelx-cloud-core/config.example.yaml is newer than the
+         user's last sync. The simplest signal: check 'cd
+         /opt/sentinelx-cloud-core && sudo -u sentinelx git log -1
+         --format=%ci config.example.yaml' against the mtime of
+         /etc/sentinelx/config.yaml. If the example is older or equal,
+         suggest running update_sentinelx_code first."
+      - "Compute the diff with sentinel_exec: 'sudo diff
+         /etc/sentinelx/config.yaml
+         /opt/sentinelx-cloud-core/config.example.yaml'. Show the user the
+         output. The diff will fall into categories: new playbook entries,
+         new service declarations, new commands in the allowlist, updated
+         comments, and (rarely) removed options. The user's customizations
+         that aren't in the example are PRESERVED — they only show up as
+         lines marked '<' in the diff."
+      - "Walk the user through each diff hunk and categorize it. Suggested
+         framing: 'New feature you might want' (playbooks, services), 'New
+         documentation' (comments), 'Your customization (preserve)'
+         (anything in user but not in example), 'Possibly obsolete'
+         (anything removed in the example). Ask which categories to merge."
+      - "For each section the user wants to adopt, use sentinel_edit in
+         'replace' mode with sudo=true and validator_preset='yaml'. Anchor
+         each insert on a stable line (e.g., a section comment header
+         like '# ============================================================================').
+         Make ONE edit at a time, NOT a wholesale file replace — that
+         would lose user customizations. After each edit, the agent
+         creates a .bak file automatically; mention this to the user."
+      - "After all edits, sanity-check the result with sentinel_exec:
+         'sudo cat /etc/sentinelx/config.yaml | python3 -c \"import sys,
+         yaml; yaml.safe_load(sys.stdin); print(\\\"YAML OK\\\")\"'.
+         If this fails, an edit produced invalid YAML — restore from one
+         of the .bak files (sentinel_edit creates one per edit) and try
+         again with smaller hunks."
+      - "Reload the agent (same as update_sentinelx_code step 7): either
+         (a) sentinel_service action='restart' service='sentinelx-cloud-core',
+         or (b) ask the user for a manual restart if the service isn't
+         declared yet."
+      - "Verify with sentinel_capabilities — new playbooks and services
+         should appear in the response. If a new playbook is now present
+         but references a service the user hasn't declared, warn the user
+         that the playbook will fail at runtime until that service is
+         added."
+    requires:
+      - "sudo access on /etc/sentinelx/config.yaml."
+      - "git repo at /opt/sentinelx-cloud-core/ with recent fetch (run
+         update_sentinelx_code first if unsure)."
+      - "Either sentinelx-cloud-core in services for self-restart, or
+         operator for a manual restart."
+    notes:
+      - "This playbook is fundamentally INTERACTIVE. The LLM should NEVER
+         blindly merge config.example.yaml into the user's config. The
+         user may have intentional customizations (custom allowlist, custom
+         services, deliberately removed defaults). Always show the diff
+         and confirm with the user before each edit."
+      - "The diff might be large after a long gap between updates. There
+         is no urgency to merge everything in one session — the user's
+         existing config keeps working. Break the merge into multiple
+         passes if the diff is overwhelming."
+      - "Why isn't this automatic? Because /etc/sentinelx/config.yaml is
+         the user's source of truth. Auto-merging would risk overwriting
+         intentional customizations. A future version of SentinelX may
+         move built-in playbooks into the agent code itself, eliminating
+         this drift entirely; until then, this playbook closes the gap."
+      - "Pro tip: to see only NEW additions in the example (lines present
+         in example but not in user), use 'sudo diff
+         /etc/sentinelx/config.yaml
+         /opt/sentinelx-cloud-core/config.example.yaml | grep \"^>\"'.
+         To see only the user's customizations (present in user but not
+         in example), use the same diff with grep \"^<\"."
+
+  create_binary_playbook:
+    description: |
+      Compose a new playbook that documents how the LLM should use a
+      specific binary that's already in the allowlist. Output is a YAML
+      block ready to insert under playbooks:.
+    when: |
+      User asks to "add a playbook for X", "document how to use Y",
+      "create a recipe for Z", or "explain to the LLM how to use BIN"
+      where BIN is a CLI tool already permitted by the allowlist but
+      doesn't have a dedicated playbook yet. Common with custom infra
+      tooling (e.g., site-specific helpers, internal CLIs).
+    steps:
+      - "Confirm the target binary is allowlisted by calling
+         sentinel_capabilities and looking for it under allowed_commands.
+         If NOT allowlisted, tell the user to add it first via the
+         add_allowed_command playbook. Do NOT proceed without this check
+         — a playbook for a non-allowlisted binary is dead documentation."
+      - "Discover the binary's interface (Camino D — the project's
+         convention). Try in order:
+         (a) sentinel_exec '<binary>' (no args). Many binaries print help
+             on bare invocation. SAFE only if you trust the binary not to
+             do something on no-args (most help-printers do nothing else).
+         (b) If (a) executes something instead of printing help, try
+             sentinel_exec '<binary> --help'.
+         (c) If neither works, ask the user for a sample command-line."
+      - "Read the help output and DETERMINE: the binary's primary purpose,
+         the available subcommands or modes, the required vs optional
+         flags, any explicit safety notes the help itself mentions."
+      - "Ask the user (or infer from the conversation if the user has
+         been clear) the following before composing:
+         - PRIMARY use case in one phrase (becomes 'description:').
+         - Trigger phrases the user might say (becomes 'when:').
+         - Any 'gotchas' from past use (becomes 'notes:').
+         - Whether the binary needs sudo: ALWAYS, sometimes, or never?
+         - What other commands it depends on (e.g., DNS records before
+           hosting setup) — becomes 'requires:'.
+         - Whether any subcommands are destructive (delete, drop, reset)
+           — these get explicit 'confirm with user' notes."
+      - "DRY-RUN: compose a draft playbook following the standard shape
+         (description, when, steps, requires, notes). Show it to the user
+         in a fenced YAML block. INCLUDE in the steps a 'if unsure, run
+         <binary> (without args)' line — Camino D should always be
+         present. Do NOT write to /etc/sentinelx/config.yaml yet."
+      - "Wait for the user's response. Possible outcomes:
+         (a) approves as-is → proceed to apply.
+         (b) requests changes → revise the draft, show again, loop until
+             user is satisfied.
+         (c) rejects → stop. The draft costs nothing to discard."
+      - "APPLY (only after explicit user approval): use sentinel_edit
+         in 'replace' mode with sudo=true and validator_preset='yaml'.
+         Anchor on a stable line — typically a section header like
+         '# CATEGORY B' if the playbook is for custom tooling, or just
+         before the next existing playbook. Insert ONE playbook at a
+         time."
+      - "Reload the agent so the new playbook is exposed in capabilities:
+         sentinel_service action='restart' service='sentinelx-cloud-core'."
+      - "Verify by calling sentinel_capabilities — the new playbook
+         should appear in the playbooks: map with all five expected
+         fields (description, when, steps, requires, notes). If a field
+         is missing or malformed, the YAML edit went wrong; check the
+         .bak that sentinel_edit created."
+    requires:
+      - "The target binary must already be in allowed_commands (run
+         add_allowed_command first if needed)."
+      - "sentinel_edit + sudo for /etc/sentinelx/config.yaml."
+      - "sentinelx-cloud-core declared in services for self-restart, OR
+         operator availability for a manual restart."
+    notes:
+      - "Do NOT auto-generate playbook content from imagination. ALWAYS
+         base it on (a) what the binary's --help/no-args output actually
+         says, and (b) what the user tells you in the conversation. If
+         neither is informative enough, ask clarifying questions instead
+         of guessing — guesses become wrong notes that mislead future
+         operators."
+      - "ALWAYS include 'if unsure about exact args, run <binary>
+         (without args) to see help' as one of the steps. This is the
+         project convention (Camino D) — it lets future operators verify
+         the syntax dynamically without relying on the playbook being
+         fresh. Static documentation rots; the binary's own help does not."
+      - "DON'T duplicate the binary's --help in the playbook. The
+         playbook's job is to add CONTEXT (when to invoke, what comes
+         before, what comes after, what to watch out for) — NOT to
+         repeat what the binary already documents itself."
+      - "For destructive subcommands (delete, drop, remove, reset, kill,
+         purge, wipe), include both: (1) a step that says 'confirm with
+         user before invoking' and (2) a note explaining why the action
+         is destructive and whether it's reversible."
+      - "If the binary needs sudo only sometimes (e.g., 'pensa-X' for
+         user paths and 'sudo pensa-X' for /etc paths), the steps should
+         show both forms and the requires: should mention both
+         allowlist entries."
+      - "Naming convention: prefer verb_noun snake_case for the playbook
+         key (e.g., create_cloudflare_subdomain, send_email,
+         provision_hosting_site). Avoid generic names like 'use_X' or
+         'X_helper'. The name itself is part of the LLM's matching
+         signal for 'when:'."
+      - "There's a similar meta-playbook for systemd services
+         (add_service) and for allowlist entries (add_allowed_command).
+         Together they let the LLM extend the agent's policy in all
+         three dimensions: commands, services, and the playbooks that
+         document them."
+
+  add_service:
+    description: |
+      Add a new systemd service to the policy so the LLM can manage it
+      via sentinel_service (status, restart, etc).
+    when: |
+      User asks to "add service X to the allowlist", "let me restart Y
+      via the agent", "manage Z with sentinelx", or any equivalent
+      phrasing where Z is a systemd unit not currently exposed in the
+      services: map.
+    steps:
+      - "Verify the systemd unit actually exists on this host. Run:
+         sentinel_exec 'systemctl list-unit-files <unit-name>*' (with
+         trailing wildcard to allow @-instance variants). If the unit
+         is NOT installed, STOP — tell the user to install the package
+         first. Adding a non-existent unit to the policy is dead config."
+      - "Confirm the unit is NOT already in services. Call
+         sentinel_capabilities and check the services: map. If already
+         present, ask the user whether they want to UPDATE the actions
+         (different concern) or if they thought it was missing (mistake)."
+      - "Determine the SERVICE KEY (the name in the map) and the UNIT
+         (the .service file). Default rule: if the unit name is
+         'foo.service', use 'foo' as both key and unit. If the unit has
+         a suffix that matters (e.g., 'foo-agent.service'), use the full
+         name in unit and a short key like 'foo'. Ask the user if unsure."
+      - "Determine the ACTIONS the user wants to expose. Ask the user
+         (or infer from context) which TIER fits:
+         (a) Read-only: [status, is-active, is-enabled]
+             — for critical services where you only want inspection.
+             Examples: ssh, networking, the agent itself.
+         (b) Conservative: [status, restart, is-active, is-enabled]
+             — for typical services that may need reloading.
+             Examples: nginx, the agent itself, most daemons.
+         (c) Operational: [status, start, stop, restart, reload,
+             is-active, is-enabled]
+             — for services the user controls fully via the LLM.
+             Examples: docker, application servers.
+         Prefer (b) by default unless the user explicitly needs (c)."
+      - "Determine sudo requirements. Most system services need sudo
+         to manage. Set requires_sudo=true UNLESS the user is running a
+         systemd --user service (rare in production). Confirm by trying
+         'sudo systemctl is-active <unit>' — if it works without password
+         prompt, the agent's sudoers covers it (which is the default
+         installer config)."
+      - "(Optional) Determine a description. One short sentence is
+         enough — appears in capabilities to help the LLM understand
+         context. Skip if no useful summary comes to mind."
+      - "DRY-RUN: compose the YAML block following the standard shape:
+
+         <key>:
+           unit: <unit-name>
+           actions: [<list>]
+           requires_sudo: <bool>
+           description: \"<optional>\"
+
+         Show it to the user in a fenced YAML block. Do NOT write to
+         /etc/sentinelx/config.yaml yet."
+      - "Wait for user response. Possible outcomes:
+         (a) approves → proceed to apply.
+         (b) requests changes → revise (e.g., different action tier),
+             show again.
+         (c) rejects → stop."
+      - "APPLY (only after explicit user approval): use sentinel_edit
+         in 'replace' mode with sudo=true and validator_preset='yaml'.
+         Anchor the edit on a stable line within the services: section
+         (e.g., on the existing nginx or docker block). Insert ONE
+         service at a time."
+      - "Reload the agent so the new service is exposed. Two paths
+         (same as add_allowed_command):
+         (a) if 'sentinelx-cloud-core' is declared in services:
+             sentinel_service action='restart'
+             service='sentinelx-cloud-core'.
+         (b) if NOT declared yet: ask the user to run on a terminal
+             'sudo systemctl restart sentinelx-cloud-core' once."
+      - "Verify by calling sentinel_capabilities — the new service
+         should appear in services: with the correct unit, actions,
+         and requires_sudo flag. Test one of the actions (preferably
+         status, the safest): sentinel_service action='status'
+         service='<key>'."
+    requires:
+      - "sentinel_edit + sudo for /etc/sentinelx/config.yaml."
+      - "The systemd unit being added must already exist on the host
+         (install the package first if needed)."
+      - "The agent's sudoers config must cover sudo systemctl for this
+         service. The default installer's /etc/sudoers.d/sentinelx is
+         broad enough for most cases."
+      - "sentinelx-cloud-core in services for self-restart, OR operator
+         for manual restart."
+    notes:
+      - "Tier choice matters for SAFETY. Operational tier (with start/
+         stop) lets the LLM bring services UP and DOWN. For services
+         whose downtime impacts users (web servers, databases), prefer
+         Conservative tier and reserve Operational for explicit user
+         control."
+      - "Critical services (ssh, networking, the agent itself, docker
+         in some setups) should NEVER have stop/start exposed. If the
+         agent stops ssh, you lose remote access. If it stops networking,
+         you lose everything. Read-only tier protects against this."
+      - "Naming convention: service KEY should be lowercase, hyphenated,
+         short (e.g., 'nginx', 'postgres', 'sentinelx-cloud-core').
+         UNIT field uses the actual systemd unit name (with or without
+         .service suffix — both work)."
+      - "For services with @-instance variants (e.g., '[email protected]',
+         'systemd-resolved.service'), declare the BASE name. The agent
+         will dispatch to the right instance based on what the LLM
+         passes. If you need to manage specific instances, use distinct
+         keys (e.g., postgresql_main, postgresql_replica)."
+      - "If the user has a service that they want the LLM to EVER stop
+         (e.g., for maintenance windows), Operational tier is the right
+         call — but document in the description WHY stop is exposed,
+         so future operators understand the risk."
+      - "There's a related meta-playbook for binaries
+         (create_binary_playbook) and for allowlist entries
+         (add_allowed_command). Together they let the LLM extend the
+         agent's policy in three dimensions: commands, services, and
+         the playbooks that document them."
+
+  sentinelx_meta:
+    description: |
+      Surface metadata about this SentinelX cloud agent: source repo,
+      installed version, available updates, support resources. Use this
+      whenever the user asks about the agent itself.
+    when: |
+      User asks meta-questions about the agent: "what version is this",
+      "where's the source code", "is there an update available", "where
+      do I report bugs", "show me the changelog", "what's running here",
+      "what's behind SentinelX". Also useful as a starting point when
+      onboarding a new operator who needs to learn the project layout.
+    steps:
+      - "For STATIC info (repo URL, install paths, support links), the
+         answer is already in the notes section of this playbook — no
+         tool call needed. Just read the notes and respond."
+      - "For the INSTALLED VERSION (current commit), run:
+           cd /opt/sentinelx-cloud-core && git log -1 --format='%h %s (%ci)'
+         Output is one line: short SHA + commit message + ISO date.
+         Example: '5991315 Remove pensa-safe-edit from default allowlist
+         (2026-05-05 01:36:03 +0000)'."
+      - "For an UPDATE CHECK (is there anything newer on origin/main?),
+         run:
+           cd /opt/sentinelx-cloud-core && git fetch origin main 2>&1 \\
+              | tail -5 && git log HEAD..origin/main --oneline
+         If the second command's output is empty → up-to-date.
+         If it shows commits → those are pending updates, list them to
+         the user with their messages."
+      - "For a quick UPDATE-AVAILABLE summary (just the count behind),
+         run:
+           cd /opt/sentinelx-cloud-core && git rev-list --count HEAD..origin/main
+         Output is a single integer. 0 means up-to-date."
+      - "For the REMOTE URL (canonical source), run:
+           cd /opt/sentinelx-cloud-core && git remote get-url origin
+         Useful if the install was customized to point at a fork."
+      - "If the user wants to APPLY pending updates, hand off to the
+         update_sentinelx_code playbook. Do NOT run git pull or restart
+         from THIS playbook — separation of concerns: this playbook
+         informs, update_sentinelx_code applies."
+      - "If the user wants to MERGE new defaults from the example into
+         their /etc/sentinelx/config.yaml after updating, use the
+         sync_sentinelx_config playbook."
+    requires:
+      - "git in allowlist (default)."
+      - "/opt/sentinelx-cloud-core readable by the agent (default install
+         location, owned by sentinelx user)."
+      - "Network access to github.com for git fetch (otherwise update
+         checks fail; static info still works offline)."
+    notes:
+      - "Source repo: https://github.com/pensados/sentinelx-cloud-core"
+      - "Public installer: https://get.sentinelx.app (one-line curl|bash
+         install — wraps the install.sh from the sentinelx-cloud-installer
+         repo)."
+      - "Issues / bug reports:
+         https://github.com/pensados/sentinelx-cloud-core/issues"
+      - "Discussions / questions:
+         https://github.com/pensados/sentinelx-cloud-core/discussions"
+      - "Hub URL: https://mcp.sentinelx.app — the central server every
+         agent connects to via outbound websocket. The connector URL for
+         Claude.ai / ChatGPT is https://mcp.sentinelx.app/mcp/mcp."
+      - "Install dir: /opt/sentinelx-cloud-core (managed by the
+         installer; safe to inspect, don't edit by hand — use
+         update_sentinelx_code to update or sentinel_edit for runtime
+         changes)."
+      - "Config file: /etc/sentinelx/config.yaml — the policy. Allowlist,
+         services, locations, playbooks all live here. Edit via
+         sentinel_edit or hand-edit and restart."
+      - "Identity file: /etc/sentinelx/identity.json — sensitive (host
+         credentials for the hub). Mode 600, owned by the sentinelx user.
+         Never share, never include in support tickets, never display
+         contents to the user."
+      - "Logs: 'journalctl -u sentinelx-cloud-core -f' — live tail.
+         '-n 100' for last 100 lines. Look for WARN/ERROR levels first."
+      - "If you're checking whether this host can self-update: it can,
+         iff (a) update_sentinelx_code is in playbooks, AND (b)
+         sentinelx-cloud-core is declared in services with the 'restart'
+         action. Both should be true on any default install."
+      - "The PROJECT considers updates user-driven, not automatic. There
+         is intentionally NO auto-update mechanism — the operator
+         decides when to pull new code, and the agent should INFORM
+         (via this playbook) but not ACT autonomously on updates."
+      - "Related meta-playbooks: add_allowed_command (extend allowlist),
+         add_service (declare systemd services), create_binary_playbook
+         (document custom CLIs). Together with update_sentinelx_code +
+         sync_sentinelx_config they form the agent's self-extension
+         surface."
+
+  drop_share:
+    description: |
+      Use drop.pensa.ar as a temporary buffer for files when transferring
+      between hosts, sharing host-side files with the operator/LLM, or
+      replicating one file to many hosts. drop.pensa.ar is a self-hosted
+      file-drop service (https://github.com/pensados/drop-pensa) that
+      accepts uploads up to 50 MB and returns a public URL with
+      configurable expiry. Files NEVER pass through the LLM's context.
+
+    when: |
+      Use this playbook in any of these scenarios:
+
+        (1) HOST-TO-HOST TRANSFER: copy a file from one enrolled host to
+            another (e.g., move /var/log/nginx/error.log from orion to
+            atlas for offline analysis). Bytes never touch the LLM
+            context.
+
+        (2) SHARE WITH OPERATOR / LLM FOR REVIEW: the user asks Claude
+            to look at a file that lives on a host (logs, configs,
+            dumps). Uploading via drop and pasting the URL into the
+            chat lets Claude web_fetch it without paying the cost of
+            base64-inlining a multi-MB file.
+
+        (3) REPLICATE ONE FILE TO MANY HOSTS: if the same artifact must
+            land on 3+ hosts (a config snippet, a binary, a cert), drop
+            it once and use sentinel_upload_file with file_url N times.
+            One POST instead of N base64 encodes.
+
+        (4) USER WANTS TO PUSH A FILE TO A HOST: the operator uploads
+            via the drop web UI (https://drop.pensa.ar), pastes the URL
+            in chat, then sentinel_upload_file with file_url lands it
+            on the target host without any base64 routing through the
+            LLM.
+
+      DO NOT use this playbook when:
+
+        - The LLM is creating a NEW file (text, config, code) and
+          uploading it to ONE host. In that case, sentinel_upload_file
+          with content_base64 (or sentinel_edit with mode='write' for
+          text) is one call versus three, with the same actual cost
+          on the LLM side. Drop adds steps without saving anything.
+
+        - The file is already at its destination. Don't round-trip
+          through drop just because.
+
+    steps:
+      - "(SCENARIO 1 — HOST-TO-HOST TRANSFER): on the SOURCE host, run:
+         sentinel_exec command='curl -s -F file=@/PATH/TO/FILE
+         https://drop.pensa.ar/upload?expires_in=600'.
+         The response is JSON; parse out the .url field. Tip: pipe to
+         python3 to extract cleanly:
+         sentinel_exec command='curl -s -F file=@/PATH https://drop.pensa.ar/upload
+         | python3 -c \"import sys,json; print(json.load(sys.stdin)[\\\"url\\\"])\"'.
+         Then on the DESTINATION host, call sentinel_upload_file with
+         file_url=<that URL> and target_path=<where you want it>.
+         The destination agent fetches drop.pensa.ar directly. Verify
+         with the sha256 returned in both responses — they MUST match."
+
+      - "(SCENARIO 2 — SHARE WITH OPERATOR/LLM): on the host that has
+         the file, run: sentinel_exec command='curl -s -F file=@/PATH
+         https://drop.pensa.ar/upload?expires_in=3600 | python3 -c
+         \"import sys,json; print(json.load(sys.stdin)[\\\"url\\\"])\"'.
+         Show the resulting URL to the operator. The operator pastes
+         it in the chat as a separate message — that is the cue for
+         Claude to use web_fetch on it. Claude's web_fetch will NOT
+         work on URLs the agent generated dynamically; the operator's
+         paste is what authorizes the fetch."
+
+      - "(SCENARIO 3 — ONE-TO-MANY REPLICATION): identical to Scenario 1,
+         but instead of a single sentinel_upload_file call, repeat that
+         call N times with the same file_url against each destination.
+         drop.pensa.ar's default 1-hour expiry covers most multi-host
+         pushes; bump expires_in if the operation will span longer."
+
+      - "(SCENARIO 4 — OPERATOR PUSHES A FILE TO A HOST): the operator
+         uploads via https://drop.pensa.ar (web UI, drag-and-drop) and
+         pastes the resulting URL in chat. Claude then calls
+         sentinel_upload_file with file_url=<that URL> on the target
+         host. Same flow as Scenario 1, just with a human as the
+         original uploader instead of a host."
+
+      - "(VERIFICATION, ALL SCENARIOS): the upload response from drop
+         includes 'sha256'. The sentinel_upload_file response after
+         file_url fetch includes 'sha256' too. Compare them — they
+         must be identical. If they differ, the file was modified
+         in transit; abort and investigate."
+
+      - "(CLEANUP, OPTIONAL): drop responses include a 'delete_url'
+         with a one-time token. To remove the file before its TTL
+         expires (e.g., for sensitive content), run sentinel_exec
+         command='curl -s -X DELETE \"<delete_url>\"'. Even if you
+         skip this, the file auto-expires per its TTL (1h default,
+         7d max)."
+
+    requires:
+      - "'curl' in the host's allowlist (default config has it)."
+      - "'python3' in the host's allowlist if you want to parse the
+         JSON response on-host (default config has it; alternatively
+         the operator/LLM can parse the JSON in the chat)."
+      - "Network access from each participating host to drop.pensa.ar.
+         For this to work behind restrictive firewalls, allow outbound
+         HTTPS to drop.pensa.ar (port 443) — same constraint as any
+         other outbound HTTPS call."
+      - "drop.pensa.ar must be reachable. It's a self-hosted service;
+         if it's down, this playbook doesn't work. Status check:
+         curl -s https://drop.pensa.ar/healthz."
+
+    notes:
+      - "Drop's hard limits: 50 MB per file, 7-day max retention,
+         255-char max filename (POSIX NAME_MAX). Rate limits: 30
+         uploads/hour per IP, 200 fetches/min per IP plus 100/hour
+         per (file, IP) pair, 60 deletes/hour. For files >50 MB,
+         fall back to sentinel_upload_init / chunk / complete with
+         content_base64 chunks (the chunked upload path supports
+         arbitrarily large files but pays the base64 cost per
+         chunk)."
+
+      - "HTTP semantics worth knowing when a fetch fails:
+         (a) 404 = the file ID was never registered or has fully
+             expired (TTL elapsed). Treat as 'try again with a
+             fresh upload'.
+         (b) 410 Gone = a one-shot upload that has already been
+             consumed. Re-fetching is impossible; the file is
+             permanently gone. Treat as 'someone else got there
+             first, ask the operator to re-upload'.
+         (c) 416 = a Range request asked for bytes outside the
+             file. Adjust the Range header.
+         (d) 429 = rate limited. Wait and retry, or split work
+             across hosts.
+         The drop service supports HTTP Range requests (RFC 9110)
+         for resumable downloads — useful for very large fetches
+         over flaky links, though sentinel_upload_file does not
+         currently use range-resume."
+
+      - "Since agent v0.2.0 the file_url path of
+         sentinel_upload_file enforces a strict allowlist:
+         only hostnames in security.trusted_fetch_hosts are
+         accepted, the resolved IP must be public-routable
+         (loopback / RFC1918 / link-local rejected), https
+         only, and redirects are disabled. The current
+         allowlist is exposed by sentinel_capabilities under
+         the fetch_policy key — check it before passing a
+         file_url, and prefer drop.pensa.ar (which is in
+         the default allowlist). Any URL outside the
+         allowlist will fail with fetch_blocked."
+
+      - "Why drop is faster than the base64-inline path WHEN the
+         file does NOT originate in the LLM: the LLM generates ~50
+         tokens (the URL) instead of ~12,000 tokens for a 30 KB
+         base64 payload. Cost difference scales linearly with
+         file size. For LLM-originated files, the LLM still has
+         to emit the bytes once somewhere — drop adds steps without
+         saving the emission cost in that case (see when: above)."
+
+      - "The sha256 returned by drop is computed at upload time. The
+         sha256 returned by sentinel_upload_file (file_url path) is
+         computed at fetch time. Matching them confirms end-to-end
+         integrity across both networks (LLM → drop → host)."
+
+      - "Drop URLs are unguessable (~78 bits of entropy in the file
+         id) but PUBLIC during their TTL. Do NOT upload secrets
+         (private keys, passwords, tokens) without setting
+         one_shot=true (file deleted on first download) AND keeping
+         expires_in short. Even then, treat drop as 'better than
+         pasting in chat, worse than a real secret store'."
+
+      - "Reference URLs:
+         - service:    https://drop.pensa.ar
+         - source:     https://github.com/pensados/drop-pensa
+         - api docs:   https://drop.pensa.ar/api"
+
+# ============================================================================
+# Logging
+# ============================================================================
+
 # SSRF defense for upload_file's file_url. Empty allowlist below means
 # file_url is effectively disabled. Add hosts you trust the agent to
 # fetch from (your own services only — see config.example.yaml for
