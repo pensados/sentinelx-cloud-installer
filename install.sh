@@ -402,10 +402,22 @@ allowed_commands:
   - cat /etc/os-release
 upload_base: /var/lib/sentinelx/uploads
 services:
-  # Pre-registered so the "restart nginx" example works out of the box.
-  # Safe actions only (no stop/start). Add more services or actions below.
+  # Pre-registered so common web-server and agent ops work on a fresh install
+  # (e.g. the "restart nginx" example in the docs). Safe actions only, no
+  # stop/start. Add more services, or more actions, below as you need them.
   nginx:
     actions: [status, restart, reload]
+  # Apache is httpd on RHEL/Fedora, apache2 on Debian/Ubuntu. Both listed so
+  # "restart my web server" works either way; a missing unit just errors.
+  httpd:
+    actions: [status, restart, reload]
+  apache2:
+    actions: [status, restart, reload]
+  # The agent itself, so the LLM can reload policy after you edit this file.
+  # Restart re-reads /etc/sentinelx/config.yaml (brief reconnect). No start/stop
+  # on purpose: the agent can't bring itself back up once stopped.
+  sentinelx-cloud-core:
+    actions: [status, restart, is-active, is-enabled]
 
 # SSRF defense for upload_file's file_url. Empty allowlist below means
 # file_url is effectively disabled. Add hosts you trust the agent to
