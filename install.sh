@@ -401,7 +401,11 @@ allowed_commands:
   - uptime
   - cat /etc/os-release
 upload_base: /var/lib/sentinelx/uploads
-services: {}
+services:
+  # Pre-registered so the "restart nginx" example works out of the box.
+  # Safe actions only (no stop/start). Add more services or actions below.
+  nginx:
+    actions: [status, restart, reload]
 
 # SSRF defense for upload_file's file_url. Empty allowlist below means
 # file_url is effectively disabled. Add hosts you trust the agent to
