@@ -1198,6 +1198,136 @@ playbooks:
 # Logging
 # ============================================================================
 
+  systemd_debug:
+    description: |
+      Quick check on systemd unit health for the services this host depends on
+      (the SentinelX agent, your web server, and any others you've registered).
+    when: |
+      User asks for an overall services snapshot, or as a starting point when
+      something feels broken but it's not clear which subsystem. Triggers:
+      "are the services up", "system health check", "what's running".
+    steps:
+      - "Inspect installed unit files: sentinel_exec 'ls /etc/systemd/system'.
+         Shows the units this host has explicitly enabled (vs. distro defaults)."
+      - "Check the agent: sentinel_service action='is-active'
+         service='sentinelx-cloud-core'."
+      - "Check the web server: sentinel_service action='status' service='nginx'
+         (or 'httpd'/'apache2' on Apache hosts)."
+      - "Check any other service in your services: map the same way
+         (action='status')."
+      - "If any look off, drill into that one with its dedicated playbook
+         (e.g. nginx_debug, docker_debug)."
+    requires:
+      - "Each service to inspect must be declared in the services: map"
+    notes:
+      - "This is a SHALLOW snapshot. For deeper diagnosis on a specific
+         subsystem, use the dedicated debug playbook."
+      - "If many services are unhealthy at once, suspect host-level issues
+         (disk full, OOM kill, network outage) before per-service debugging."
+
+  nginx_debug:
+    description: |
+      Quick diagnostic when nginx is misbehaving — service down, proxy errors,
+      certificate problems, or unexpected 502/504s.
+    when: |
+      User reports nginx issues (e.g., "nginx is not responding", "502 errors",
+      "site is down", "check nginx") or when troubleshooting a web service that
+      goes through nginx as a reverse proxy.
+    steps:
+      - "Check service state: sentinel_service action='status' service='nginx'.
+         If inactive, that's the obvious cause."
+      - "Validate nginx config syntax: sentinel_exec 'sudo nginx -t'. Even a
+         small typo in any sites-available file will prevent reload/restart."
+      - "Inspect recent error log: sentinel_exec 'sudo tail -n 50
+         /var/log/nginx/error.log'. Most 502/504 issues are visible here."
+      - "Inspect recent access log if needed: sentinel_exec 'sudo tail -n 30
+         /var/log/nginx/access.log'. Confirms requests are reaching nginx."
+      - "List configured sites: sentinel_exec 'ls /etc/nginx/sites-available'.
+         Helps spot orphaned or recently-modified configs."
+    requires:
+      - "sentinel_service permission for nginx (in the default services map)"
+      - "sudo access for log files in /var/log/nginx/"
+    notes:
+      - "If nginx -t fails, the FIX comes BEFORE any restart attempt — restarting
+         a service with broken config produces an inactive service."
+      - "Common upstream culprit for 502: a backend service is down (check what
+         nginx proxies to — often docker containers or local services on ports)."
+      - "If the issue is SSL-related, check certificate expiry with
+         'openssl x509 -in CERT -noout -dates'."
+
+  docker_debug:
+    description: |
+      General-purpose Docker diagnostic — daemon health, running containers,
+      image inventory, and stack-specific checks.
+    when: |
+      User asks about Docker state, container issues, or wants an overview of
+      what's running. Triggers: "docker status", "what containers are up",
+      "is X running", "docker stack health".
+    steps:
+      - "Check daemon health: sentinel_service action='status' service='docker'
+         (register 'docker' in your services: map first if it isn't already)."
+      - "List running containers: sentinel_exec 'docker ps'. For ALL containers
+         (including stopped): 'docker ps -a'."
+      - "List images: sentinel_exec 'docker images'. Useful if the user is
+         concerned about disk usage or stale images."
+      - "If you keep compose stacks in a directory, inspect it: sentinel_exec
+         'ls <your compose dir>' (e.g. ~/docker or /srv/docker)."
+    requires:
+      - "sentinel_service permission for docker (register it if needed)"
+      - "docker in the allowlist"
+    notes:
+      - "For container-specific debugging, follow up with 'docker logs <name>
+         --tail 50' or 'docker inspect <name>'."
+      - "If the daemon itself is unhealthy, 'sudo journalctl -u docker -n 50'
+         is more informative than the systemctl status output."
+
+  network_debug:
+    description: |
+      Basic network diagnostic — interfaces, routes, listening ports, and
+      reachability tests.
+    when: |
+      User reports network issues (e.g., "internet not working", "can't reach
+      X", "what's listening on port Y") or when troubleshooting a service that
+      depends on network connectivity.
+    steps:
+      - "Check interfaces and IPs: sentinel_exec 'ip a'."
+      - "Check routing table: sentinel_exec 'ip route'. The default route tells
+         you the gateway."
+      - "Check listening ports: sentinel_exec 'ss -tuln'. Each :PORT line tells
+         you what's bound where."
+      - "Test reachability: sentinel_exec 'ping -c 3 1.1.1.1' (or any host the
+         user expects to reach)."
+      - "Test DNS: sentinel_exec 'dig example.com' (or the relevant domain)."
+    requires:
+      - "The commands above (ip, ss, ping, dig) must be in the allowlist"
+    notes:
+      - "If ping fails but dig works, suspect ICMP filtering rather than actual
+         connectivity loss — try curl as an alternative reachability test."
+      - "If DNS fails locally, check /etc/resolv.conf and try a public resolver:
+         'dig @8.8.8.8 example.com'."
+      - "For deeper packet-level inspection, tcpdump helps but use it sparingly
+         — captures grow fast (and it must be in the allowlist)."
+
+  ports_debug:
+    description: |
+      List the ports in use on this host with the process bound to each.
+    when: |
+      User asks 'what's on port X' or 'what ports are listening' or wants a
+      full inventory of network-exposed services.
+    steps:
+      - "List listening ports with their process: sentinel_exec 'sudo ss -tulnp'.
+         Each line shows protocol, local address:port, and the process/PID bound
+         to it. (Without sudo, process info is hidden.)"
+      - "For a specific port: sentinel_exec 'sudo ss -tulnp | grep :PORT'."
+      - "For more detail (owning user, full binary path): sentinel_exec
+         'sudo lsof -i -P -n' — richer but slower."
+    requires:
+      - "'sudo ss' (and optionally 'sudo lsof') in the allowlist"
+    notes:
+      - "ss is the modern replacement for netstat; prefer it. lsof is the
+         fallback when you need the owning user or the full binary path."
+      - "'-tul' covers both TCP and UDP; drop the 'u' for TCP-only."
+
 # SSRF defense for upload_file's file_url. Empty allowlist below means
 # file_url is effectively disabled. Add hosts you trust the agent to
 # fetch from (your own services only — see config.example.yaml for
