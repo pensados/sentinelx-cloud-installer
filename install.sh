@@ -388,18 +388,67 @@ if [[ ! -f "$ETC_DIR/config.yaml" ]]; then
         cat > "$ETC_DIR/config.yaml" <<EOF
 # SentinelX agent configuration. Edit to expand allowed commands.
 allowed_commands:
+
+  # Identity & basics (read-only)
   - echo
   - whoami
+  - id
+  - pwd
   - uname
   - hostname
   - date
-  - ls
-  - id
-  - pwd
-  - df -h
-  - free -h
+
+  # System & resource inspection (read-only)
+  - df
+  - du
+  - free
   - uptime
-  - cat /etc/os-release
+  - vmstat
+  - lsblk
+  - lscpu
+  - nproc
+  - "ps "            # trailing space: matches 'ps aux', not 'psql'
+
+  # Network inspection (read-only)
+  - "ss "            # trailing space: matches 'ss -tuln', not 'ssh'
+  - netstat
+  - ip a
+  - ip route
+  - ping
+  - dig
+
+  # File & log inspection (read-only)
+  - ls
+  - cat
+  - head
+  - tail
+  - grep
+  - wc
+  - stat
+  - tree
+  - journalctl
+
+  # Git - safe read-only subcommands only (no reset/clean/push/pull/checkout)
+  - git status
+  - git log
+  - git diff
+  - git branch
+  - git show
+  - git remote
+  - git fetch
+
+  # Docker - safe read-only subcommands only (no run/exec/rm/stop/start)
+  - docker ps
+  - docker logs
+  - docker images
+  - docker inspect
+  - docker stats
+  - docker version
+
+  # Anything that writes, deletes, installs, or escalates (rm, mv, chmod, apt,
+  # systemctl, git reset, docker run, ssh, ...) is intentionally NOT in the
+  # default. Add what you need with the add_allowed_command playbook.
+
 upload_base: /var/lib/sentinelx/uploads
 services:
   # Pre-registered so common web-server and agent ops work on a fresh install
