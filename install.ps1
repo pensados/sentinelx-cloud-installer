@@ -110,10 +110,13 @@ if (-not (Test-Admin)) {
   Fatal 'Run this in an ELEVATED PowerShell (Run as administrator) - the service install needs it. (Use -Check for a no-admin dry-run.)'
 }
 
-# 1) Python launcher
-$pyExe = $null; $pyPre = @()
-if     (Get-Command py     -ErrorAction SilentlyContinue) { $pyExe = 'py'; $pyPre = @('-3') }
-elseif (Get-Command python -ErrorAction SilentlyContinue) { $pyExe = 'python' }
+# 1) Python launcher. NB: distinct name from $PyExe -- PowerShell variables are
+# case-INSENSITIVE, so a `$pyExe` here would be the SAME variable as $PyExe (the
+# venv python) and clobber it, making the service run the system `py` instead of
+# the venv (which is how the LocalSystem service lost its deps).
+$BootPy = $null; $pyPre = @()
+if     (Get-Command py     -ErrorAction SilentlyContinue) { $BootPy = 'py'; $pyPre = @('-3') }
+elseif (Get-Command python -ErrorAction SilentlyContinue) { $BootPy = 'python' }
 else   { Fatal 'Python not found. Install Python 3.12+ (python.org) and re-run.' }
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $LogDir | Out-Null
@@ -127,7 +130,7 @@ $env:PYTHONNOUSERSITE = '1'
 # 2) venv + agent
 if (-not (Test-Path $PyExe)) {
   Info "Creating venv at $Venv"
-  & $pyExe @pyPre -m venv $Venv
+  & $BootPy @pyPre -m venv $Venv
 }
 Info 'Upgrading pip'
 & $PyExe -m pip install --upgrade pip | Out-Null
