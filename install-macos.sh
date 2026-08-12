@@ -27,22 +27,26 @@ REPO_URL="git+https://github.com/pensados/sentinelx-cloud-core.git"
 ENROLL_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-installer/main/enroll.py"
 EXAMPLE_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-core/main/config.example.macos.yaml"
 
-c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
+c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'; c_cyan=$'\033[36m'; c_bold=$'\033[1m'
 info()  { echo "${c_grn}[*]${c_rst} $*"; }
 warn()  { echo "${c_ylw}[!]${c_rst} $*"; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
 banner() {
-  printf '%b' "$c_grn"
+  printf '%b' "$c_cyan"
   cat <<'ART'
- ____             _   _            ___  __
-/ ___|  ___ _ __ | |_(_)_ __   ___| \ \/ /
-\___ \ / _ \ '_ \| __| | '_ \ / _ \ |\  / 
- ___) |  __/ | | | |_| | | | |  __/ |/  \ 
-|____/ \___|_| |_|\__|_|_| |_|\___|_/_/\_\
+  ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     ██╗  ██╗
+  ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     ╚██╗██╔╝
+  ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║      ╚███╔╝
+  ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║      ██╔██╗
+  ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗██╔╝ ██╗
+  ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝  ╚═╝
 ART
   printf '%b' "$c_rst"
-  echo "  self-hosted, auditable server access for LLMs"
+  echo "  ${c_bold}Cloud Installer${c_rst} - connect this Mac to mcp.sentinelx.app"
+  echo "  via the Model Context Protocol."
+  echo "  ${c_ylw}What you'll get:${c_rst} a SentinelX agent that lets AI assistants"
+  echo "  (Claude, ChatGPT, etc.) operate this Mac through MCP."
   echo
 }
 
