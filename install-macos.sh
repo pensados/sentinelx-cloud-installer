@@ -150,15 +150,28 @@ mkdir -p "$(dirname "$PLIST")"
 write_plist "$PLIST"
 command -v plutil >/dev/null && plutil -lint "$PLIST" >/dev/null
 
+# NOTE: we deliberately never `bootout` a running agent here. When this
+# installer is run *through* the SentinelX agent itself, tearing the agent
+# down mid-install severs the very connection driving the install. RunAtLoad
+# already starts the agent at login, so a fresh install only needs to load the
+# service once; a re-run just refreshes the plist and leaves the agent running.
 if [[ "$MODE" == "system" ]]; then
   [[ "$(id -u)" == "0" ]] || fatal "system mode needs sudo."
   chown root:wheel "$PLIST"; chmod 644 "$PLIST"
-  launchctl bootout system "$PLIST" 2>/dev/null || true
-  launchctl bootstrap system "$PLIST"
+  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    info "LaunchDaemon already loaded; plist refreshed (agent left running)."
+    info "  Apply changes now (restarts the agent): sudo launchctl kickstart -k system/$LABEL"
+  else
+    launchctl bootstrap system "$PLIST" && info "LaunchDaemon loaded."
+  fi
 else
   DOM="gui/$(id -u)"
-  launchctl bootout "$DOM" "$PLIST" 2>/dev/null || true
-  launchctl bootstrap "$DOM" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
+  if launchctl print "$DOM/$LABEL" >/dev/null 2>&1; then
+    info "LaunchAgent already loaded; plist refreshed (agent left running)."
+    info "  Apply changes now (restarts the agent): launchctl kickstart -k $DOM/$LABEL"
+  else
+    { launchctl bootstrap "$DOM" "$PLIST" 2>/dev/null || launchctl load "$PLIST"; } && info "LaunchAgent loaded."
+  fi
 fi
 
 sleep 3
