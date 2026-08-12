@@ -175,7 +175,10 @@ if [[ ! -f "$INSTALL_DIR/config.yaml" ]]; then
 import os, sys, yaml, urllib.request
 inst, url = sys.argv[1], sys.argv[2]
 cfg = yaml.safe_load(urllib.request.urlopen(url).read())
-cfg.setdefault("file_ops", {})["paths"] = [{"path": os.path.realpath(inst + "/workspace"), "access": "rw"}]
+cfg.setdefault("file_ops", {})["paths"] = [
+    {"path": os.path.realpath(inst + "/workspace"), "access": "rw"},
+    {"path": os.path.realpath(inst + "/config.yaml"), "access": "rw"},  # self-managed policy (file-scoped)
+]
 cfg["upload_base"] = os.path.realpath(inst + "/uploads")   # macOS: /var -> /private/var
 open(inst + "/config.yaml", "w").write(yaml.safe_dump(cfg, sort_keys=False))
 print("  config.yaml written")
