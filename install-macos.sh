@@ -25,7 +25,7 @@ HUB_URL="${SENTINELX_HUB_URL:-https://mcp.sentinelx.app}"
 LABEL="app.sentinelx.core"
 REPO_URL="git+https://github.com/pensados/sentinelx-cloud-core.git"
 ENROLL_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-installer/main/enroll.py"
-EXAMPLE_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-core/main/config.example.yaml"
+EXAMPLE_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-core/main/config.example.macos.yaml"
 
 c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 info()  { echo "${c_grn}[*]${c_rst} $*"; }
