@@ -2,14 +2,19 @@
 #
 # SentinelX Core - macOS installer.
 # Companion to install.sh (Linux/systemd). Two modes:
-#   user   (default) - LaunchAgent in ~/Library/LaunchAgents, runs as you, NO root.
-#   system           - LaunchDaemon + hidden _sentinelx user, requires sudo.
+#   user   (default) - LaunchAgent in ~/Library/LaunchAgents; runs as you, NO
+#                      root; starts at login, stops at logout.
+#   system           - LaunchDaemon in /Library/LaunchDaemons; launchd starts it
+#                      at BOOT and it survives logout. Runs AS you and reuses the
+#                      same per-user install (uv's Python stays reachable); uses
+#                      sudo ONLY for the daemon step, so run it as your normal
+#                      user (NOT with sudo).
 #
 # Env:
 #   SENTINELX_MODE=user|system     (default: user)
 #   SENTINELX_HUB_URL              (default: https://mcp.sentinelx.app)
 #   SENTINELX_HOST_ID              (default: mac-<shortname>)
-#   SENTINELX_INSTALL_DIR          (default: ~/sentinelx  or  /usr/local/sentinelx-cloud-core)
+#   SENTINELX_INSTALL_DIR          (default: ~/sentinelx)
 #   SENTINELX_CHECK=1              Dry run: generate + plutil-lint the plist, then exit.
 #
 set -euo pipefail
@@ -27,31 +32,36 @@ info()  { echo "${c_grn}[*]${c_rst} $*"; }
 warn()  { echo "${c_ylw}[!]${c_rst} $*"; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
+# Both modes install per-user: uv places its Python under the user's home, so a
+# separate service user could not reach the venv. System mode differs ONLY in
+# the service - a LaunchDaemon that launchd starts at boot, running as this user.
+INSTALL_DIR="${SENTINELX_INSTALL_DIR:-$HOME/sentinelx}"
+SVC_USER="$(id -un)"
 if [[ "$MODE" == "system" ]]; then
-  INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/usr/local/sentinelx-cloud-core}"
   PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-  SVC_USER="_sentinelx"
 else
-  INSTALL_DIR="${SENTINELX_INSTALL_DIR:-$HOME/sentinelx}"
   PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 fi
 BIN="$INSTALL_DIR/.venv/bin/sentinelx-cloud-core"
 
 # ---------- plist generators (mirror the Linux systemd unit) ----------------
-write_launchagent() {
-  cat > "$1" <<PL
+plist_body() {
+  # $1 = extra <dict> lines (e.g. UserName) injected before ProgramArguments
+  cat <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key><string>${LABEL}</string>
-    <key>ProgramArguments</key>
+$1    <key>ProgramArguments</key>
     <array>
         <string>${BIN}</string>
         <string>--hub</string><string>${HUB_URL}</string>
         <string>--identity</string><string>${INSTALL_DIR}/identity.json</string>
         <string>--config</string><string>${INSTALL_DIR}/config.yaml</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>SENTINELX_AUDIT_PATH</key><string>${INSTALL_DIR}/audit.jsonl</string></dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>ThrottleInterval</key><integer>5</integer>
@@ -61,31 +71,14 @@ write_launchagent() {
 </plist>
 PL
 }
-write_launchdaemon() {
-  cat > "$1" <<PL
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>${LABEL}</string>
-    <key>UserName</key><string>${SVC_USER:-_sentinelx}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${BIN}</string>
-        <string>--hub</string><string>${HUB_URL}</string>
-        <string>--identity</string><string>${INSTALL_DIR}/identity.json</string>
-        <string>--config</string><string>${INSTALL_DIR}/config.yaml</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>ThrottleInterval</key><integer>5</integer>
-    <key>StandardOutPath</key><string>${INSTALL_DIR}/agent.log</string>
-    <key>StandardErrorPath</key><string>${INSTALL_DIR}/agent.err</string>
-</dict>
-</plist>
-PL
+write_plist() {
+  if [[ "$MODE" == "system" ]]; then
+    plist_body "    <key>UserName</key><string>${SVC_USER}</string>
+" > "$1"
+  else
+    plist_body "" > "$1"
+  fi
 }
-write_plist() { if [[ "$MODE" == "system" ]]; then write_launchdaemon "$1"; else write_launchagent "$1"; fi; }
 
 # ---------- CHECK mode: validate the plist, touch nothing --------------------
 [[ "$(uname -s)" == "Darwin" ]] || fatal "macOS only. On Linux use install.sh."
@@ -94,6 +87,12 @@ if [[ "$CHECK" == "1" ]]; then
   tmp="$(mktemp -d)"; write_plist "$tmp/${LABEL}.plist"
   command -v plutil >/dev/null && { plutil -lint "$tmp/${LABEL}.plist" || fatal "plutil -lint failed"; } || warn "plutil not found - skipping lint"
   info "plist OK"; cat "$tmp/${LABEL}.plist"; exit 0
+fi
+
+# System mode must run as your normal user; the install has to be user-owned so
+# uv's per-user Python is reachable. We elevate only for the daemon step.
+if [[ "$MODE" == "system" && "$(id -u)" == "0" ]]; then
+  fatal "Run system mode as your normal user (not with sudo). The script uses sudo only for the LaunchDaemon step."
 fi
 
 # ---------- prerequisites ----------------------------------------------------
@@ -144,27 +143,29 @@ print("  config.yaml written")
 PYCFG
 fi
 
-# ---------- service (LaunchAgent, or LaunchDaemon for system mode) -----------
+# ---------- service ----------------------------------------------------------
+# We deliberately never `bootout` a running agent: running this installer THROUGH
+# the SentinelX agent and tearing it down mid-install would sever the connection
+# driving the install. RunAtLoad starts the agent at boot/login, so a fresh
+# install loads the service once; a re-run refreshes the plist and leaves the
+# running agent alone. Restarting to apply changes is an explicit kickstart.
 info "Installing launchd service ($MODE)"
-mkdir -p "$(dirname "$PLIST")"
-write_plist "$PLIST"
-command -v plutil >/dev/null && plutil -lint "$PLIST" >/dev/null
+TMP_PLIST="$(mktemp)"
+write_plist "$TMP_PLIST"
+command -v plutil >/dev/null && plutil -lint "$TMP_PLIST" >/dev/null
 
-# NOTE: we deliberately never `bootout` a running agent here. When this
-# installer is run *through* the SentinelX agent itself, tearing the agent
-# down mid-install severs the very connection driving the install. RunAtLoad
-# already starts the agent at login, so a fresh install only needs to load the
-# service once; a re-run just refreshes the plist and leaves the agent running.
 if [[ "$MODE" == "system" ]]; then
-  [[ "$(id -u)" == "0" ]] || fatal "system mode needs sudo."
-  chown root:wheel "$PLIST"; chmod 644 "$PLIST"
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+  sudo cp "$TMP_PLIST" "$PLIST"
+  sudo chown root:wheel "$PLIST"; sudo chmod 644 "$PLIST"
+  if sudo launchctl print "system/$LABEL" >/dev/null 2>&1; then
     info "LaunchDaemon already loaded; plist refreshed (agent left running)."
     info "  Apply changes now (restarts the agent): sudo launchctl kickstart -k system/$LABEL"
   else
-    launchctl bootstrap system "$PLIST" && info "LaunchDaemon loaded."
+    sudo launchctl bootstrap system "$PLIST" && info "LaunchDaemon loaded (starts at boot, survives logout)."
   fi
 else
+  mkdir -p "$(dirname "$PLIST")"
+  cp "$TMP_PLIST" "$PLIST"
   DOM="gui/$(id -u)"
   if launchctl print "$DOM/$LABEL" >/dev/null 2>&1; then
     info "LaunchAgent already loaded; plist refreshed (agent left running)."
@@ -173,10 +174,16 @@ else
     { launchctl bootstrap "$DOM" "$PLIST" 2>/dev/null || launchctl load "$PLIST"; } && info "LaunchAgent loaded."
   fi
 fi
+rm -f "$TMP_PLIST"
 
 sleep 3
-if launchctl list 2>/dev/null | grep -q "$LABEL"; then
-  info "Done. Agent is managed by launchd. Logs: $INSTALL_DIR/agent.log"
+if [[ "$MODE" == "system" ]]; then
+  running=$(sudo launchctl print "system/$LABEL" 2>/dev/null | grep -c "state = running" || true)
 else
-  warn "Service loaded but not visible in launchctl list yet - check $INSTALL_DIR/agent.log"
+  running=$(launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -c "state = running" || true)
+fi
+if [[ "${running:-0}" -ge 1 ]]; then
+  info "Done. Agent running under launchd. Logs: $INSTALL_DIR/agent.log"
+else
+  warn "Service loaded but not confirmed running yet - check $INSTALL_DIR/agent.log"
 fi

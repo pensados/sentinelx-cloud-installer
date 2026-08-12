@@ -12,5 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Shell syntax
         run: bash -n install-macos.sh
-      - name: Check mode - generate and lint the launchd plist
+      - name: Check mode (user) - lint LaunchAgent plist
         run: SENTINELX_CHECK=1 ./install-macos.sh
+      - name: Check mode (system) - lint LaunchDaemon plist
+        run: SENTINELX_MODE=system SENTINELX_CHECK=1 ./install-macos.sh
