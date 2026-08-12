@@ -122,6 +122,21 @@ warn()  { echo "${c_yel}[!]${c_rst} $*"; }
 err()   { echo "${c_red}[!]${c_rst} $*" >&2; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
+banner() {
+  printf '%b' "$c_grn"
+  cat <<'ART'
+ ____             _   _            ___  __
+/ ___|  ___ _ __ | |_(_)_ __   ___| \ \/ /
+\___ \ / _ \ '_ \| __| | '_ \ / _ \ |\  / 
+ ___) |  __/ | | | |_| | | | |  __/ |/  \ 
+|____/ \___|_| |_|\__|_|_| |_|\___|_/_/\_\
+ART
+  printf '%b' "$c_rst"
+  echo "  self-hosted, auditable server access for LLMs"
+  echo
+}
+
+
 # --- preflight ---------------------------------------------------------------
 [[ "$(uname -s)" == "Linux" ]] || fatal "Only Linux is supported."
 [[ "$EUID" -eq 0 ]] || fatal "Please run as root (use sudo)."
@@ -201,6 +216,8 @@ info "  Python:      $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
 
 # Note: pip and venv availability are already verified by check_python() above,
 # so we don't repeat those checks here.
+
+banner
 
 info "SentinelX installer starting"
 info "  Hub:         $HUB_URL"

@@ -32,6 +32,21 @@ info()  { echo "${c_grn}[*]${c_rst} $*"; }
 warn()  { echo "${c_ylw}[!]${c_rst} $*"; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
+banner() {
+  printf '%b' "$c_grn"
+  cat <<'ART'
+ ____             _   _            ___  __
+/ ___|  ___ _ __ | |_(_)_ __   ___| \ \/ /
+\___ \ / _ \ '_ \| __| | '_ \ / _ \ |\  / 
+ ___) |  __/ | | | |_| | | | |  __/ |/  \ 
+|____/ \___|_| |_|\__|_|_| |_|\___|_/_/\_\
+ART
+  printf '%b' "$c_rst"
+  echo "  self-hosted, auditable server access for LLMs"
+  echo
+}
+
+
 # Both modes install per-user: uv places its Python under the user's home, so a
 # separate service user could not reach the venv. System mode differs ONLY in
 # the service - a LaunchDaemon that launchd starts at boot, running as this user.
@@ -88,6 +103,8 @@ if [[ "$CHECK" == "1" ]]; then
   command -v plutil >/dev/null && { plutil -lint "$tmp/${LABEL}.plist" || fatal "plutil -lint failed"; } || warn "plutil not found - skipping lint"
   info "plist OK"; cat "$tmp/${LABEL}.plist"; exit 0
 fi
+
+banner
 
 # System mode must run as your normal user; the install has to be user-owned so
 # uv's per-user Python is reachable. We elevate only for the daemon step.
