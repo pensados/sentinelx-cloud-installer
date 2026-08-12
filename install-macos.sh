@@ -1,144 +1,169 @@
 #!/usr/bin/env bash
 #
-# SentinelX Core - macOS installer (launchd).
-# Companion to install.sh (Linux/systemd). Run with sudo.
+# SentinelX Core - macOS installer.
+# Companion to install.sh (Linux/systemd). Two modes:
+#   user   (default) - LaunchAgent in ~/Library/LaunchAgents, runs as you, NO root.
+#   system           - LaunchDaemon + hidden _sentinelx user, requires sudo.
 #
 # Env:
-#   SENTINELX_HUB_URL       Hub websocket URL
-#   SENTINELX_INSTALL_DIR   Install dir (default: /usr/local/sentinelx-cloud-core)
-#   SENTINELX_CHECK=1        Dry run: generate + validate the launchd plist and
-#                           exit, without creating users, cloning, or loading.
+#   SENTINELX_MODE=user|system     (default: user)
+#   SENTINELX_HUB_URL              (default: https://mcp.sentinelx.app)
+#   SENTINELX_HOST_ID              (default: mac-<shortname>)
+#   SENTINELX_INSTALL_DIR          (default: ~/sentinelx  or  /usr/local/sentinelx-cloud-core)
+#   SENTINELX_CHECK=1              Dry run: generate + plutil-lint the plist, then exit.
 #
 set -euo pipefail
 
-INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/usr/local/sentinelx-cloud-core}"
-ETC_DIR="${SENTINELX_ETC_DIR:-/usr/local/etc/sentinelx}"
-LOG_DIR="/usr/local/var/log/sentinelx"
-UPLOAD_BASE="/usr/local/var/sentinelx/uploads"
-WORKSPACE="/usr/local/var/sentinelx/workspace"
-SVC_USER="_sentinelx"
-SVC_GROUP="_sentinelx"
-LABEL="app.sentinelx.core"
-PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-REPO_URL="https://github.com/pensados/sentinelx-cloud-core.git"
-HUB_URL="${SENTINELX_HUB_URL:-wss://mcp.sentinelx.app/agent}"
+MODE="${SENTINELX_MODE:-user}"
 CHECK="${SENTINELX_CHECK:-0}"
+HUB_URL="${SENTINELX_HUB_URL:-https://mcp.sentinelx.app}"
+LABEL="app.sentinelx.core"
+REPO_URL="git+https://github.com/pensados/sentinelx-cloud-core.git"
+ENROLL_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-installer/main/enroll.py"
+EXAMPLE_URL="https://raw.githubusercontent.com/pensados/sentinelx-cloud-core/main/config.example.yaml"
 
-c_grn=$'\033[32m'; c_red=$'\033[31m'; c_ylw=$'\033[33m'; c_rst=$'\033[0m'
+c_grn=$'\033[32m'; c_ylw=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 info()  { echo "${c_grn}[*]${c_rst} $*"; }
 warn()  { echo "${c_ylw}[!]${c_rst} $*"; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
-realpath_py() { /usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+if [[ "$MODE" == "system" ]]; then
+  INSTALL_DIR="${SENTINELX_INSTALL_DIR:-/usr/local/sentinelx-cloud-core}"
+  PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+  SVC_USER="_sentinelx"
+else
+  INSTALL_DIR="${SENTINELX_INSTALL_DIR:-$HOME/sentinelx}"
+  PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+fi
+BIN="$INSTALL_DIR/.venv/bin/sentinelx-cloud-core"
 
-# --- launchd plist (mirrors the Linux systemd unit) --------------------------
-write_plist() {
-  local dest="$1"
-  cat > "$dest" <<PLIST
+# ---------- plist generators (mirror the Linux systemd unit) ----------------
+write_launchagent() {
+  cat > "$1" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>${LABEL}</string>
+    <key>Label</key><string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${INSTALL_DIR}/.venv/bin/sentinelx-cloud-core</string>
-        <string>--hub</string>
-        <string>${HUB_URL}</string>
-        <string>--identity</string>
-        <string>${ETC_DIR}/identity.json</string>
-        <string>--config</string>
-        <string>${ETC_DIR}/config.yaml</string>
+        <string>${BIN}</string>
+        <string>--hub</string><string>${HUB_URL}</string>
+        <string>--identity</string><string>${INSTALL_DIR}/identity.json</string>
+        <string>--config</string><string>${INSTALL_DIR}/config.yaml</string>
     </array>
-    <key>UserName</key>
-    <string>${SVC_USER}</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>5</integer>
-    <key>StandardOutPath</key>
-    <string>${LOG_DIR}/agent.log</string>
-    <key>StandardErrorPath</key>
-    <string>${LOG_DIR}/agent.err</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>5</integer>
+    <key>StandardOutPath</key><string>${INSTALL_DIR}/agent.log</string>
+    <key>StandardErrorPath</key><string>${INSTALL_DIR}/agent.err</string>
 </dict>
 </plist>
-PLIST
+PL
 }
-
-# --- config: start from the rich example, override macOS paths (realpath'd) ---
-write_config() {
-  local dest="$1" example="$2"
-  /usr/bin/python3 - "$dest" "$example" "$WORKSPACE" "$UPLOAD_BASE" <<'PYCFG'
-import sys, os, yaml
-dest, example, ws, upload = sys.argv[1:5]
-cfg = yaml.safe_load(open(example)) if os.path.exists(example) else {}
-cfg.setdefault("file_ops", {})["paths"] = [{"path": os.path.realpath(ws), "access": "rw"}]
-cfg["upload_base"] = os.path.realpath(upload)   # macOS: /var -> /private/var
-open(dest, "w").write(yaml.safe_dump(cfg, sort_keys=False))
-print("config written:", dest)
-PYCFG
+write_launchdaemon() {
+  cat > "$1" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${LABEL}</string>
+    <key>UserName</key><string>${SVC_USER:-_sentinelx}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${BIN}</string>
+        <string>--hub</string><string>${HUB_URL}</string>
+        <string>--identity</string><string>${INSTALL_DIR}/identity.json</string>
+        <string>--config</string><string>${INSTALL_DIR}/config.yaml</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>5</integer>
+    <key>StandardOutPath</key><string>${INSTALL_DIR}/agent.log</string>
+    <key>StandardErrorPath</key><string>${INSTALL_DIR}/agent.err</string>
+</dict>
+</plist>
+PL
 }
+write_plist() { if [[ "$MODE" == "system" ]]; then write_launchdaemon "$1"; else write_launchagent "$1"; fi; }
 
-# ============================================================================
+# ---------- CHECK mode: validate the plist, touch nothing --------------------
 [[ "$(uname -s)" == "Darwin" ]] || fatal "macOS only. On Linux use install.sh."
-
-# --- CHECK mode: validate the plist without touching the system -------------
 if [[ "$CHECK" == "1" ]]; then
-  info "check mode: generating launchd plist"
-  tmp="$(mktemp -d)"
-  write_plist "$tmp/${LABEL}.plist"
-  if command -v plutil >/dev/null 2>&1; then
-    plutil -lint "$tmp/${LABEL}.plist" || fatal "plist failed plutil -lint"
-  else
-    warn "plutil not found (not on macOS?) - skipping lint"
-  fi
-  info "plist OK"
-  cat "$tmp/${LABEL}.plist"
-  exit 0
+  info "check mode ($MODE): generating + linting plist"
+  tmp="$(mktemp -d)"; write_plist "$tmp/${LABEL}.plist"
+  command -v plutil >/dev/null && { plutil -lint "$tmp/${LABEL}.plist" || fatal "plutil -lint failed"; } || warn "plutil not found - skipping lint"
+  info "plist OK"; cat "$tmp/${LABEL}.plist"; exit 0
 fi
 
-# --- real install (requires root) -------------------------------------------
-[[ "$(id -u)" == "0" ]] || fatal "Run with sudo."
-command -v git >/dev/null 2>&1 || fatal "git not found (xcode-select --install)."
-[[ -x /usr/bin/python3 ]] || fatal "python3 not found."
-
-info "Creating service user ${SVC_USER}"
-if ! dscl . -read "/Users/${SVC_USER}" >/dev/null 2>&1; then
-  # pick a free UID in the daemon range
-  uid=200
-  while dscl . -list /Users UniqueID | awk '{print $2}' | grep -qx "$uid"; do uid=$((uid+1)); done
-  dscl . -create "/Groups/${SVC_GROUP}"
-  dscl . -create "/Groups/${SVC_GROUP}" PrimaryGroupID "$uid"
-  dscl . -create "/Users/${SVC_USER}"
-  dscl . -create "/Users/${SVC_USER}" UserShell /usr/bin/false
-  dscl . -create "/Users/${SVC_USER}" RealName "SentinelX Agent"
-  dscl . -create "/Users/${SVC_USER}" UniqueID "$uid"
-  dscl . -create "/Users/${SVC_USER}" PrimaryGroupID "$uid"
-  dscl . -create "/Users/${SVC_USER}" NFSHomeDirectory /var/empty
-  dscl . -create "/Users/${SVC_USER}" IsHidden 1
+# ---------- prerequisites ----------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+  info "Command Line Tools (git) not found - triggering install"
+  xcode-select --install 2>/dev/null || true
+  fatal "A macOS dialog should appear. Click 'Install', wait for it to finish, then re-run this script."
 fi
 
-info "Installing agent code"
-mkdir -p "$INSTALL_DIR" "$ETC_DIR" "$LOG_DIR" "$UPLOAD_BASE" "$WORKSPACE"
-if [[ ! -d "$INSTALL_DIR/.git" ]]; then
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+  info "Installing uv (brings a modern Python without sudo)"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+command -v uv >/dev/null 2>&1 || fatal "uv install failed; ensure ~/.local/bin is on PATH."
+
+# ---------- install the agent ------------------------------------------------
+info "Installing agent into $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/workspace" "$INSTALL_DIR/uploads"
+[[ -d "$INSTALL_DIR/.venv" ]] || uv venv --python 3.12 "$INSTALL_DIR/.venv"
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/.venv/bin/activate"
+uv pip install --refresh "$REPO_URL"
+
+# ---------- enroll (skip if we already have an identity) ---------------------
+HOST_ID="${SENTINELX_HOST_ID:-mac-$(hostname -s)}"
+if [[ -f "$INSTALL_DIR/identity.json" ]]; then
+  info "identity.json present - skipping enrollment"
 else
-  git -C "$INSTALL_DIR" pull --ff-only
+  curl -fsSL "$ENROLL_URL" -o "$INSTALL_DIR/enroll.py"
+  echo "${c_ylw}Enroll in your browser:${c_rst} ${HUB_URL}/auth/dashboard/enroll?host_id=${HOST_ID}"
+  echo "  (log in, copy the token, paste it below)"
+  python "$INSTALL_DIR/enroll.py" --hub "$HUB_URL" --host-id "$HOST_ID" --output "$INSTALL_DIR/identity.json" --mode paste
 fi
-/usr/bin/python3 -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install -e "$INSTALL_DIR"
 
-info "Writing config"
-[[ -f "$ETC_DIR/config.yaml" ]] || write_config "$ETC_DIR/config.yaml" "$INSTALL_DIR/config.example.yaml"
+# ---------- config (macOS paths, realpath'd) --------------------------------
+if [[ ! -f "$INSTALL_DIR/config.yaml" ]]; then
+  info "Writing config"
+  python - "$INSTALL_DIR" "$EXAMPLE_URL" <<'PYCFG'
+import os, sys, yaml, urllib.request
+inst, url = sys.argv[1], sys.argv[2]
+cfg = yaml.safe_load(urllib.request.urlopen(url).read())
+cfg.setdefault("file_ops", {})["paths"] = [{"path": os.path.realpath(inst + "/workspace"), "access": "rw"}]
+cfg["upload_base"] = os.path.realpath(inst + "/uploads")   # macOS: /var -> /private/var
+open(inst + "/config.yaml", "w").write(yaml.safe_dump(cfg, sort_keys=False))
+print("  config.yaml written")
+PYCFG
+fi
 
-chown -R "${SVC_USER}:${SVC_GROUP}" "$INSTALL_DIR" "$ETC_DIR" "$LOG_DIR" "$UPLOAD_BASE" "$WORKSPACE"
-
-info "Installing launchd daemon"
+# ---------- service (LaunchAgent, or LaunchDaemon for system mode) -----------
+info "Installing launchd service ($MODE)"
+mkdir -p "$(dirname "$PLIST")"
 write_plist "$PLIST"
-chown root:wheel "$PLIST"; chmod 644 "$PLIST"
-launchctl bootout system "$PLIST" 2>/dev/null || true
-launchctl bootstrap system "$PLIST"
-info "Done. Logs: $LOG_DIR/agent.log"
+command -v plutil >/dev/null && plutil -lint "$PLIST" >/dev/null
+
+if [[ "$MODE" == "system" ]]; then
+  [[ "$(id -u)" == "0" ]] || fatal "system mode needs sudo."
+  chown root:wheel "$PLIST"; chmod 644 "$PLIST"
+  launchctl bootout system "$PLIST" 2>/dev/null || true
+  launchctl bootstrap system "$PLIST"
+else
+  DOM="gui/$(id -u)"
+  launchctl bootout "$DOM" "$PLIST" 2>/dev/null || true
+  launchctl bootstrap "$DOM" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
+fi
+
+sleep 3
+if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+  info "Done. Agent is managed by launchd. Logs: $INSTALL_DIR/agent.log"
+else
+  warn "Service loaded but not visible in launchctl list yet - check $INSTALL_DIR/agent.log"
+fi
