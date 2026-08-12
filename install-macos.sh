@@ -47,6 +47,28 @@ ART
 }
 
 
+# Scoped passwordless sudo (macOS "option 1"): the agent runs as your user
+# (not an isolated account), so we grant NOPASSWD only for the allowlisted
+# commands that need root - launchctl (services) + the file ops - NOT
+# "NOPASSWD: ALL". python3 is deliberately excluded (arbitrary code as root).
+# Real hardening (a dedicated _sentinelx user) is future work.
+setup_sudoers() {
+  local f="/etc/sudoers.d/sentinelx" tmp
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+# SentinelX agent - scoped passwordless sudo (managed by install-macos.sh).
+# Revoke with: sudo rm ${f}
+${SVC_USER} ALL=(root) NOPASSWD: /bin/launchctl, /bin/cat, /usr/bin/grep, /usr/bin/touch, /usr/bin/tee, /bin/cp, /bin/mv, /bin/mkdir, /bin/rm, /bin/ln, /bin/unlink, /bin/chmod, /usr/sbin/chown, /usr/bin/sed, ${INSTALL_DIR}/.venv/bin/sentinelx-pensa-safe-edit
+EOF
+  if sudo visudo -c -f "$tmp" >/dev/null 2>&1; then
+    sudo install -m 440 -o root -g wheel "$tmp" "$f"
+    info "Installed scoped sudoers at $f (passwordless sudo for allowlisted root cmds)."
+  else
+    warn "sudoers failed visudo validation; skipped (sudo will prompt for a password)."
+  fi
+  rm -f "$tmp"
+}
+
 # Both modes install per-user: uv places its Python under the user's home, so a
 # separate service user could not reach the venv. System mode differs ONLY in
 # the service - a LaunchDaemon that launchd starts at boot, running as this user.
@@ -180,6 +202,7 @@ if [[ "$MODE" == "system" ]]; then
   else
     sudo launchctl bootstrap system "$PLIST" && info "LaunchDaemon loaded (starts at boot, survives logout)."
   fi
+  setup_sudoers
 else
   mkdir -p "$(dirname "$PLIST")"
   cp "$TMP_PLIST" "$PLIST"
