@@ -3,22 +3,25 @@
 The one-line installer for SentinelX. This is what `https://get.sentinelx.app` serves.
 
 ```bash
-curl -fsSL https://get.sentinelx.app | sudo bash
+curl -fsSL https://get.sentinelx.app | bash
 ```
 
-Run that on any Linux host you want to operate from your LLM. The script clones
+Run that on any Linux or macOS host you want to operate from your LLM. The script clones
 [`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core), sets
 it up as a systemd service, and walks you through enrollment.
 
 ## Who this is for
 
-Anyone who wants to install the SentinelX agent on a Linux server and connect
+Anyone who wants to install the SentinelX agent on a Linux or macOS host and connect
 it to Claude.ai or ChatGPT via the SentinelX hub.
 
 ## What it does, step by step
 
-1. **Prereq check** — confirms you're on Linux, running as root, with `git`,
-   `python3`, and `systemd` available.
+1. **OS detection & prereqs** — the one-line command auto-detects Linux or
+   macOS and runs the right installer. On Linux it confirms you're root with
+   `git`, `python3`, and `systemd`; on macOS it installs Python via `uv` and
+   uses `launchd`. (Steps 2–3 below describe the Linux flow; macOS is analogous
+   with a per-user install and launchd.)
 2. **System user** — creates an unprivileged `sentinelx` user that the agent
    will run as.
 3. **Sudo setup** — by default, installs `/etc/sudoers.d/sentinelx` so the
@@ -86,7 +89,7 @@ If you'd rather not pipe a remote script into sudo:
 ```bash
 curl -fsSL https://get.sentinelx.app/install.sh -o install.sh
 less install.sh                     # read it
-sudo bash install.sh                # then run it
+bash install.sh                # then run it
 ```
 
 The script is tiny (~7 KB) and stdlib-only.
