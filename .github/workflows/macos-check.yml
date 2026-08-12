@@ -1,0 +1,16 @@
+name: macos-installer-check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n install-macos.sh
+      - name: Check mode - generate and lint the launchd plist
+        run: SENTINELX_CHECK=1 ./install-macos.sh
