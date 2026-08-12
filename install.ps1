@@ -118,6 +118,12 @@ else   { Fatal 'Python not found. Install Python 3.12+ (python.org) and re-run.'
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $LogDir | Out-Null
 
+# Make the venv SELF-CONTAINED: hide the invoking user's site-packages so pip
+# installs ALL deps INTO the venv. The service runs as LocalSystem, which can't
+# see a user's per-user site-packages, so any dependency left "already
+# satisfied" from user-site would crash the service (ModuleNotFoundError).
+$env:PYTHONNOUSERSITE = '1'
+
 # 2) venv + agent
 if (-not (Test-Path $PyExe)) {
   Info "Creating venv at $Venv"
