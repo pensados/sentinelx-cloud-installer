@@ -2,13 +2,27 @@
 
 The one-line installer for SentinelX. This is what `https://get.sentinelx.app` serves.
 
+**Linux / macOS** — the one-liner auto-detects your OS:
+
 ```bash
 curl -fsSL https://get.sentinelx.app | bash
 ```
 
-Run that on any Linux or macOS host you want to operate from your LLM. The script clones
-[`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core), sets
-it up as a systemd service, and walks you through enrollment.
+**Windows** — a PowerShell installer (needs Python 3.12+ and `git` on `PATH`):
+
+```powershell
+iwr -useb https://get.sentinelx.app/install.ps1 -OutFile "$env:TEMP\sx.ps1"
+# service install (admin) -- runs as a Windows service at boot:
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\sx.ps1"
+# ...or a no-admin per-user install:
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\sx.ps1" -User
+```
+
+Run the relevant command on any host you want to operate from your LLM. The script installs
+[`sentinelx-cloud-core`](https://github.com/pensados/sentinelx-cloud-core) and registers it
+as a service -- a systemd unit on Linux, a launchd daemon on macOS, a Windows service (or a
+per-user task with `-User`) on Windows -- then walks you through enrollment. See
+[Windows](#windows) below for offline installs and corporate-network notes.
 
 ## Who this is for
 
