@@ -43,6 +43,52 @@ it to Claude.ai or ChatGPT via the SentinelX hub.
 After this completes, the host appears in your account on the SentinelX hub
 and you can target it from Claude.ai or ChatGPT.
 
+## Windows
+
+Windows uses a PowerShell installer (`install.ps1`, also served from
+`get.sentinelx.app`) instead of the bash script. Two modes:
+
+```powershell
+iwr -useb https://get.sentinelx.app/install.ps1 -OutFile "$env:TEMP\sx.ps1"
+# service install -- runs as LocalSystem at boot; needs an ELEVATED PowerShell:
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\sx.ps1"
+# per-user install -- no admin; runs as you at logon (for locked-down machines):
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\sx.ps1" -User
+```
+
+- **Service mode** wraps the agent with [WinSW](https://github.com/winsw/winsw)
+  so it runs as a Windows service (LocalSystem, auto-start at boot) — the
+  analogue of the systemd unit / launchd daemon.
+- **User mode** (`-User`) registers a per-user Scheduled Task that runs the
+  agent windowless at logon, as your own account. No admin required — the
+  right fit for locked-down corporate machines.
+
+**Prerequisites:** Python 3.12+ and `git` on `PATH`. **Offline / blocked
+PyPI:** add `-Bundle <zip-or-url>` to install from the prebuilt wheel bundle
+attached to the latest release (`--no-index --no-deps`, no PyPI needed).
+**TLS-inspecting proxy:** the agent verifies the hub certificate against the
+OS trust store (`truststore`), so a corporate CA is accepted without
+weakening verification.
+
+Other flags: `-Check` (no-admin dry-run), `-HostId`, `-InstallDir`,
+`-HubUrl`, `-ImportFrom` (reuse an existing identity/config), `-Source`
+(editable dev install).
+
+**Uninstall (Windows).** Service mode:
+
+```powershell
+& "C:\ProgramData\SentinelX\sentinelx-service.exe" stop
+& "C:\ProgramData\SentinelX\sentinelx-service.exe" uninstall
+Remove-Item -Recurse -Force C:\ProgramData\SentinelX
+```
+
+User mode:
+
+```powershell
+schtasks /End /TN SentinelX; schtasks /Delete /TN SentinelX /F
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\SentinelX"
+```
+
 ## Connecting to your LLM
 
 **ChatGPT** — install [SentinelX from the app directory](https://chatgpt.com/apps/sentinelx/asdk_app_69f63e01766881919640f03b5e7912a5),
