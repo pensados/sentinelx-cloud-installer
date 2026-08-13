@@ -27,6 +27,9 @@
     -Source      Local checkout path -> EDITABLE install (dev: `git pull` + restart iterates).
                  Omit -> pip install from git main.
     -ImportFrom  A dir holding an existing identity.json / config.yaml to REUSE.
+    -Bundle      Offline install from a wheel bundle (a .zip, a directory, or an
+                 https URL to a .zip) instead of PyPI -- for networks that block
+                 PyPI (corporate filters). Installs every wheel with --no-deps.
     -Check       Dry-run: print the plan, touch nothing. Does NOT require admin.
 
   Service-mode real installs need an ELEVATED PowerShell. -User and -Check do not.
@@ -39,6 +42,7 @@ param(
   [string]$HostId,
   [string]$Source,
   [string]$ImportFrom,
+  [string]$Bundle,
   [switch]$Check
 )
 $ErrorActionPreference = 'Stop'
@@ -113,6 +117,7 @@ if ($Check) {
   Info "HostId     : $HostId   |  Hub: $HubUrl"
   if ($Source)     { Info "Source     : $Source (EDITABLE install)" } else { Info "Source     : $RepoUrl (git main)" }
   if ($ImportFrom) { Info "ImportFrom : $ImportFrom (reuse identity/config)" }
+  if ($Bundle)     { Info "Bundle     : $Bundle (OFFLINE install, no PyPI)" }
   if ($User) {
     Info "Startup    : per-user Scheduled Task '$SvcId' at logon, running:"
     Info "             $PywExe -m sentinelx_core --hub $HubUrl --identity `"$IdentityPath`" --config `"$ConfigPath`" --log-file `"$AgentLog`""
@@ -149,9 +154,34 @@ if (-not (Test-Path $PyExe)) {
   Info "Creating venv at $Venv"
   & $BootPy @pyPre -m venv $Venv
 }
-Info 'Upgrading pip'
-& $PyExe -m pip install --upgrade pip | Out-Null
-if ($Source) {
+if (-not $Bundle) {
+  Info 'Upgrading pip'
+  & $PyExe -m pip install --upgrade pip | Out-Null
+}
+if ($Bundle) {
+  # Offline install from a wheel bundle (zip or dir). For networks that block
+  # PyPI (corporate filters). Install ALL wheels with --no-deps: the bundle is
+  # the complete closure, and --no-deps avoids the agent's git-URL protocol
+  # dependency (which pip would otherwise try to fetch+build from git, needing
+  # PyPI for the build backend -> the exact thing a blocked network breaks).
+  $whlDir = $Bundle
+  if ($Bundle -match '^https?://') {
+    $tmpZip = Join-Path $env:TEMP 'sentinelx-bundle.zip'
+    Info "Downloading bundle: $Bundle"
+    Invoke-WebRequest -Uri $Bundle -OutFile $tmpZip
+    $whlDir = Join-Path $env:TEMP 'sentinelx-bundle'
+    if (Test-Path $whlDir) { Remove-Item -Recurse -Force $whlDir }
+    Expand-Archive -Path $tmpZip -DestinationPath $whlDir -Force
+  } elseif ($Bundle -match '\.zip$') {
+    $whlDir = Join-Path $env:TEMP 'sentinelx-bundle'
+    if (Test-Path $whlDir) { Remove-Item -Recurse -Force $whlDir }
+    Expand-Archive -Path $Bundle -DestinationPath $whlDir -Force
+  }
+  $whls = Get-ChildItem -Path $whlDir -Recurse -Filter *.whl | Select-Object -ExpandProperty FullName
+  if (-not $whls) { Fatal "No .whl files found in bundle: $Bundle" }
+  Info "Installing agent offline from bundle ($($whls.Count) wheels)"
+  & $PyExe -m pip install --no-index --no-deps @whls
+} elseif ($Source) {
   Info "Installing agent (editable) from $Source"
   & $PyExe -m pip install -e $Source
 } else {
