@@ -211,7 +211,7 @@ print("  tailored: " + home + " (r), " + ws + " (rw), config self-managed, backe
 if ($User) {
   # ---- USER mode: per-user Scheduled Task (no admin, no WinSW) ------------
   Info "Registering per-user Scheduled Task '$SvcId' (runs at your logon, restarts on failure)"
-  $me      = "$env:USERDOMAIN\$env:USERNAME"
+  $me      = [Security.Principal.WindowsIdentity]::GetCurrent().Name
   $taskArg = "-m sentinelx_core --hub $HubUrl --identity `"$IdentityPath`" --config `"$ConfigPath`" --log-file `"$AgentLog`""
   $action    = New-ScheduledTaskAction -Execute $PywExe -Argument $taskArg -WorkingDirectory $InstallDir
   $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $me
