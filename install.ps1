@@ -180,7 +180,10 @@ if ($Bundle) {
   $whls = Get-ChildItem -Path $whlDir -Recurse -Filter *.whl | Select-Object -ExpandProperty FullName
   if (-not $whls) { Fatal "No .whl files found in bundle: $Bundle" }
   Info "Installing agent offline from bundle ($($whls.Count) wheels)"
-  & $PyExe -m pip install --no-index --no-deps @whls
+  # --force-reinstall so a rebuilt bundle at the SAME semantic version (e.g.
+  # a 0.4.1 with a fresh fix) actually replaces the installed core wheel --
+  # without it, pip sees the version already present and skips the update (#9).
+  & $PyExe -m pip install --no-index --no-deps --force-reinstall @whls
 } elseif ($Source) {
   Info "Installing agent (editable) from $Source"
   & $PyExe -m pip install -e $Source
