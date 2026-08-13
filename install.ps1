@@ -42,8 +42,7 @@ function Fatal($m){ Write-Host "[x] $m" -ForegroundColor Red; exit 1 }
 $SvcId      = 'SentinelX'
 $SvcName    = 'SentinelX Agent'
 $RepoUrl    = 'git+https://github.com/pensados/sentinelx-cloud-core.git'
-# NOTE: until windows-port merges to main, the example lives on that branch.
-$ExampleUrl = 'https://raw.githubusercontent.com/pensados/sentinelx-cloud-core/windows-port/config.example.windows.yaml'
+$ExampleUrl = 'https://raw.githubusercontent.com/pensados/sentinelx-cloud-core/main/config.example.windows.yaml'
 if (-not $HostId) { $HostId = "win-$($env:COMPUTERNAME.ToLower())" }
 
 $Venv         = Join-Path $InstallDir '.venv'
@@ -159,8 +158,29 @@ if (-not (Test-Path $ConfigPath)) {
     Info "Importing config.yaml from $ImportFrom"
     Copy-Item (Join-Path $ImportFrom 'config.yaml') $ConfigPath -Force
   } else {
-    Info 'Fetching read-only example config'
+    Info 'Fetching + tailoring the example config'
     Invoke-WebRequest -Uri $ExampleUrl -OutFile $ConfigPath
+    # Fill in machine-specific file_ops paths (profile r, workspace rw, and
+    # config.yaml rw so the policy self-manages) + upload_base, via the venv
+    # Python. Without this a fresh config has no readable/writable paths.
+    $tailor = @'
+import sys, os, yaml
+cfg_path, install_dir = sys.argv[1], sys.argv[2]
+cfg = yaml.safe_load(open(cfg_path, encoding="utf-8").read()) or {}
+home = os.environ.get("USERPROFILE", r"C:\Users\Public")
+ws = os.path.join(install_dir, "workspace")
+os.makedirs(ws, exist_ok=True)
+cfg["file_ops"] = {"paths": [
+    {"path": home, "access": "r"},
+    {"path": ws, "access": "rw"},
+    {"path": os.path.join(install_dir, "config.yaml"), "access": "rw"},
+]}
+cfg["upload_base"] = os.path.join(install_dir, "uploads")
+open(cfg_path, "w", encoding="utf-8").write(
+    yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True, width=100))
+print("  tailored: " + home + " (r), " + ws + " (rw), config self-managed")
+'@
+    $tailor | & $PyExe - $ConfigPath $InstallDir
   }
 }
 
