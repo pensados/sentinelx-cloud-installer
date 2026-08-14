@@ -59,6 +59,21 @@ function Step($m){
   Write-Host ("  [{0}/4] {1}" -f $script:_stepN, $m) -ForegroundColor Cyan
 }
 
+function Show-Connect {
+  Write-Host ''
+  Write-Host '  One step left - connect SentinelX to your AI assistant:' -ForegroundColor Cyan
+  Write-Host ''
+  Write-Host "    Connector URL:  $HubUrl/mcp/mcp"
+  Write-Host "    Dashboard:      $HubUrl/dashboard   (view and manage your hosts)"
+  Write-Host ''
+  Write-Host '    Claude:   Settings -> Connectors -> Add custom connector -> paste the Connector URL'
+  Write-Host '    ChatGPT:  https://chatgpt.com/apps/sentinelx/asdk_app_69f63e01766881919640f03b5e7912a5'
+  Write-Host ''
+  Write-Host '    Full guide:  https://sentinelx.app/#setup'
+  Write-Host ''
+  Write-Host '    Then try asking your assistant:  "List my SentinelX servers."' -ForegroundColor DarkGray
+}
+
 function Write-Banner {
   # UTF-8 so the block-glyph logo renders on modern consoles; degrades to the
   # console default if this host can't switch encodings.
@@ -304,6 +319,7 @@ if ($User) {
   $state = (Get-ScheduledTask -TaskName $SvcId -ErrorAction SilentlyContinue).State
   if ($state -eq 'Running') {
     Ok "Task '$SvcId' is running as you (starts at logon). Logs: $AgentLog"
+    Show-Connect
     Info "Manage: schtasks /Run /TN $SvcId  |  schtasks /End /TN $SvcId  |  Get-ScheduledTask $SvcId"
   } else {
     Warn "Task registered but state is '$state'. Check $AgentLog. If your org blocks Task Scheduler by policy, that is the likely cause."
@@ -333,6 +349,7 @@ if ($User) {
   try { $final = (& $WinswExe status 2>$null | Out-String).Trim() } catch {}
   if ($final -match 'Started|Running') {
     Ok "Service '$SvcId' is running (starts at boot). Logs: $LogDir"
+    Show-Connect
     Info "Manage: Restart-Service $SvcId  |  Get-Service $SvcId  |  `"$WinswExe`" status"
   } else {
     Warn "Service installed but not confirmed running (status: '$final'). Check $LogDir\sentinelx-service.*.log."
