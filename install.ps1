@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   SentinelX Core - Windows installer (companion to install.sh / install-macos.sh).
 
@@ -47,9 +47,40 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-function Info($m){ Write-Host "[*] $m" -ForegroundColor Green }
-function Warn($m){ Write-Host "[!] $m" -ForegroundColor Yellow }
-function Fatal($m){ Write-Host "[x] $m" -ForegroundColor Red; exit 1 }
+function Info($m){ Write-Host "    [+] $m" -ForegroundColor Green }
+function Warn($m){ Write-Host "    [!] $m" -ForegroundColor Yellow }
+function Fatal($m){ Write-Host "    [x] $m" -ForegroundColor Red; exit 1 }
+function Ok($m){ Write-Host ''; Write-Host "  [OK] $m" -ForegroundColor Green }
+
+$script:_stepN = 0
+function Step($m){
+  $script:_stepN++
+  Write-Host ''
+  Write-Host ("  [{0}/4] {1}" -f $script:_stepN, $m) -ForegroundColor Cyan
+}
+
+function Write-Banner {
+  # UTF-8 so the block-glyph logo renders on modern consoles; degrades to the
+  # console default if this host can't switch encodings.
+  try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+  $c = 'Cyan'
+  Write-Host ''
+  Write-Host '  ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     ██╗  ██╗' -ForegroundColor $c
+  Write-Host '  ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     ╚██╗██╔╝' -ForegroundColor $c
+  Write-Host '  ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║      ╚███╔╝' -ForegroundColor $c
+  Write-Host '  ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║      ██╔██╗' -ForegroundColor $c
+  Write-Host '  ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗██╔╝ ██╗' -ForegroundColor $c
+  Write-Host '  ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝  ╚═╝' -ForegroundColor $c
+  Write-Host ''
+  Write-Host '  Cloud Installer' -ForegroundColor White -NoNewline
+  Write-Host ' — connect this Windows host to mcp.sentinelx.app'
+  Write-Host '  via the Model Context Protocol.'
+  Write-Host ''
+  Write-Host "  What you'll get:" -ForegroundColor Yellow -NoNewline
+  Write-Host ' a SentinelX agent that lets AI assistants'
+  Write-Host '  (Claude, ChatGPT, etc.) operate this host through MCP.'
+  Write-Host ''
+}
 
 $SvcId      = 'SentinelX'
 $SvcName    = 'SentinelX Agent'
@@ -109,6 +140,8 @@ function Resolve-WinswUrl {
   $asset.browser_download_url
 }
 
+Write-Banner
+
 # ------------------------- CHECK (dry-run) --------------------------------
 if ($Check) {
   Info 'check mode - nothing will be installed.'
@@ -134,6 +167,9 @@ if (-not $User -and -not (Test-Admin)) {
   Fatal 'Service mode needs an ELEVATED PowerShell (Run as administrator). On a machine where you are not a local admin, use -User for a no-admin per-user install. (-Check is a no-admin dry-run.)'
 }
 
+Info ("Plan: " + $(if ($User) { 'USER install (Scheduled Task, no admin)' } else { 'SERVICE install (WinSW, starts at boot)' }) + "  |  dir: $InstallDir  |  host: $HostId")
+
+Step 'Checking prerequisites (Python + install dir)'
 # 1) Python launcher. NB: distinct name from $PyExe -- PowerShell variables are
 # case-INSENSITIVE, so a `$pyExe` here would be the SAME variable as $PyExe and
 # clobber the venv python path.
@@ -149,6 +185,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir, $LogDir | Out-Null
 # user's per-user site-packages, so deps left "already satisfied" there crash it).
 $env:PYTHONNOUSERSITE = '1'
 
+Step 'Installing the SentinelX agent (virtualenv + package)'
 # 2) venv + agent
 if (-not (Test-Path $PyExe)) {
   Info "Creating venv at $Venv"
@@ -192,6 +229,7 @@ if ($Bundle) {
   & $PyExe -m pip install $RepoUrl
 }
 
+Step 'Identity & configuration'
 # 3) identity + config
 if (-not (Test-Path $IdentityPath)) {
   if ($ImportFrom -and (Test-Path (Join-Path $ImportFrom 'identity.json'))) {
@@ -240,6 +278,7 @@ print("  tailored: " + home + " (r), " + ws + " (rw), config self-managed, backe
   }
 }
 
+Step 'Registering startup & launching the agent'
 # 4) startup mechanism
 if ($User) {
   # ---- USER mode: per-user Scheduled Task (no admin, no WinSW) ------------
@@ -258,7 +297,7 @@ if ($User) {
   Start-Sleep -Seconds 4
   $state = (Get-ScheduledTask -TaskName $SvcId -ErrorAction SilentlyContinue).State
   if ($state -eq 'Running') {
-    Info "Done. Task '$SvcId' is running as you (starts at logon). Logs: $AgentLog"
+    Ok "Task '$SvcId' is running as you (starts at logon). Logs: $AgentLog"
     Info "Manage: schtasks /Run /TN $SvcId  |  schtasks /End /TN $SvcId  |  Get-ScheduledTask $SvcId"
   } else {
     Warn "Task registered but state is '$state'. Check $AgentLog. If your org blocks Task Scheduler by policy, that is the likely cause."
@@ -287,7 +326,7 @@ if ($User) {
   $final = ''
   try { $final = (& $WinswExe status 2>$null | Out-String).Trim() } catch {}
   if ($final -match 'Started|Running') {
-    Info "Done. Service '$SvcId' is running (starts at boot). Logs: $LogDir"
+    Ok "Service '$SvcId' is running (starts at boot). Logs: $LogDir"
     Info "Manage: Restart-Service $SvcId  |  Get-Service $SvcId  |  `"$WinswExe`" status"
   } else {
     Warn "Service installed but not confirmed running (status: '$final'). Check $LogDir\sentinelx-service.*.log."
