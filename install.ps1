@@ -293,6 +293,12 @@ if ($User) {
                  -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
   Register-ScheduledTask -TaskName $SvcId -Action $action -Trigger $trigger `
                          -Principal $principal -Settings $settings -Force | Out-Null
+  # End any instance left over from a previous install BEFORE starting. With
+  # -MultipleInstances IgnoreNew, Start-ScheduledTask is a no-op while an old
+  # instance is running, which would leave the pre-update agent (old code)
+  # alive. Stopping first guarantees the freshly-installed code is what runs.
+  Stop-ScheduledTask -TaskName $SvcId -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 500
   Start-ScheduledTask -TaskName $SvcId
   Start-Sleep -Seconds 4
   $state = (Get-ScheduledTask -TaskName $SvcId -ErrorAction SilentlyContinue).State
