@@ -8,13 +8,19 @@ The one-line installer for SentinelX. This is what `https://get.sentinelx.app` s
 curl -fsSL https://get.sentinelx.app | bash
 ```
 
-**Windows** — a PowerShell installer (needs Python 3.12+ and `git` on `PATH`):
+**Windows** — a PowerShell installer (needs Python 3.12+ and `git` on `PATH`). Two ways to run it:
+
+*Service install* — runs as a Windows service at boot; needs an **elevated** PowerShell:
 
 ```powershell
 iwr -useb https://get.sentinelx.app/install.ps1 -OutFile "$env:TEMP\sx.ps1"
-# service install (admin) -- runs as a Windows service at boot:
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\sx.ps1"
-# ...or a no-admin per-user install:
+```
+
+*Per-user install* — no admin; runs as you at logon (for locked-down / corporate machines):
+
+```powershell
+iwr -useb https://get.sentinelx.app/install.ps1 -OutFile "$env:TEMP\sx.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\sx.ps1" -User
 ```
 
