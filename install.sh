@@ -1474,6 +1474,7 @@ if systemctl is-active --quiet sentinelx-cloud-core.service; then
     info "One step left — connect SentinelX to your AI assistant:"
     echo
     echo "  Connector URL:  $HUB_URL/mcp/mcp"
+    echo "  Dashboard:      $HUB_URL/dashboard   (view and manage your hosts)"
     echo
     echo "  Claude:   Settings → Connectors → Add custom connector → paste the URL"
     echo "  ChatGPT:  https://chatgpt.com/apps/sentinelx/asdk_app_69f63e01766881919640f03b5e7912a5"

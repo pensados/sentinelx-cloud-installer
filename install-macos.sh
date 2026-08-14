@@ -231,6 +231,16 @@ else
 fi
 if [[ "${running:-0}" -ge 1 ]]; then
   info "Done. Agent running under launchd. Logs: $INSTALL_DIR/agent.log"
+  echo
+  info "One step left — connect SentinelX to your AI assistant:"
+  echo
+  echo "  Connector URL:  $HUB_URL/mcp/mcp"
+  echo "  Dashboard:      $HUB_URL/dashboard   (view and manage your hosts)"
+  echo
+  echo "  Claude:   Settings → Connectors → Add custom connector → paste the URL"
+  echo "  ChatGPT:  https://chatgpt.com/apps/sentinelx/asdk_app_69f63e01766881919640f03b5e7912a5"
+  echo
+  echo "  Full guide:  https://sentinelx.app/#setup"
 else
   warn "Service loaded but not confirmed running yet - check $INSTALL_DIR/agent.log"
 fi
