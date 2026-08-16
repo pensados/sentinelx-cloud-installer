@@ -19,7 +19,7 @@ run() {
   local tmp; tmp="$(mktemp)"
   curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; return 1; }
   local rc=0
-  if [ -e /dev/tty ]; then "$@" bash "$tmp" </dev/tty || rc=$?; else "$@" bash "$tmp" || rc=$?; fi
+  if (exec </dev/tty) 2>/dev/null; then "$@" bash "$tmp" </dev/tty || rc=$?; else "$@" bash "$tmp" || rc=$?; fi
   rm -f "$tmp"
   return "$rc"
 }
