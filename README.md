@@ -40,9 +40,16 @@ Manage your fleet any time at [`mcp.sentinelx.app/dashboard`](https://mcp.sentin
 
 Nothing you haven't allowed. Every action is gated by the config the installer writes (`/etc/sentinelx/config.yaml` on Linux; next to the install on macOS/Windows):
 
-- **`exec.allow`** — shell commands the agent may run
-- **`services.allow`** — services it may start, stop, or restart
-- **`paths.allow_edit`** — files it may read and edit
+- **`allowed_commands`** — shell commands the agent may run. Prefix-matched, so
+  allowing `git` covers `git status`, `git log`, etc. Empty or missing means
+  nothing is allowed (deny by default).
+- **`services`** — service units it may control, with the permitted actions
+  listed per unit (so a unit can be `status`-only, or restartable but not
+  stoppable).
+- **`file_ops.paths`** — filesystem paths the structured file tools may touch.
+  Each entry declares an access level: `r` (read, list, search) or `rw` (those
+  plus edit, move, copy, delete, chmod, chown). A path in neither is invisible
+  to those tools. This is a separate allowlist from `allowed_commands`.
 
 A starter config is written at install time; edit it to widen or narrow that reach. Full reference: [`config.example.yaml`](https://github.com/pensados/sentinelx-cloud-core/blob/main/config.example.yaml).
 
