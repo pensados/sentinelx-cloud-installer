@@ -502,12 +502,27 @@ if ! systemctl list-units --type=service --no-pager >/dev/null 2>&1; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now sentinelx-cloud-core.service
+systemctl enable sentinelx-cloud-core.service
+
+# restart, not `enable --now`: on a host that already had the agent running,
+# `--now` is a no-op, so the freshly installed code sat on disk while the old
+# process kept serving from memory -- an upgrade that silently did nothing and
+# still printed "SentinelX is running". That is how someone re-running this
+# installer to pick up a security fix would have stayed on the vulnerable
+# version. restart covers both cases: it starts a stopped service and replaces
+# a running one.
+systemctl restart sentinelx-cloud-core.service
 
 # --- final status ------------------------------------------------------------
 sleep 2
 if systemctl is-active --quiet sentinelx-cloud-core.service; then
-    info "SentinelX is running."
+    # Report the version the RUNNING process will serve, read from the venv
+    # the unit actually executes. Printing "running" without it is what let a
+    # no-op upgrade look like a successful one.
+    RUNNING_VERSION="$("$INSTALL_DIR/.venv/bin/python" -c \
+        'import importlib.metadata as m; print(m.version("sentinelx-cloud-core"))' \
+        2>/dev/null || echo "unknown")"
+    info "SentinelX is running (agent $RUNNING_VERSION)."
     echo
     echo "  Status:   systemctl status sentinelx-cloud-core"
     echo "  Logs:     journalctl -u sentinelx-cloud-core -f"
