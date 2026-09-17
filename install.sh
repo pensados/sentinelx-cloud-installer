@@ -472,6 +472,22 @@ ExecStart=$INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\
 Restart=always
 RestartSec=5
 
+# Scheduling priority. The agent needs very little of the machine, but it needs
+# it promptly. On a saturated host it otherwise cannot answer its keepalive --
+# or even finish the handshake within the connect deadline -- and the operator
+# loses remote access at exactly the moment they need it to diagnose the load.
+# Three users reported that shape in one day, one of them unable to get back in
+# at all. Cheap to grant: a process that is idle most of the time costs a busy
+# host nothing by being scheduled first when it does wake.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+
+# And it must not be what the kernel sacrifices when memory runs short. The
+# agent is the way back into the machine, not a workload competing for it; a
+# host that OOM-kills it goes dark with no remote way to find out why.
+OOMScoreAdjust=-500
+
 $HARDENING
 
 [Install]
