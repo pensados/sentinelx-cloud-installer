@@ -52,6 +52,20 @@ function Warn($m){ Write-Host "    [!] $m" -ForegroundColor Yellow }
 function Fatal($m){ Write-Host "    [x] $m" -ForegroundColor Red; exit 1 }
 function Ok($m){ Write-Host ''; Write-Host "  [OK] $m" -ForegroundColor Green }
 
+# $ErrorActionPreference = 'Stop' does NOT turn a non-zero exit code from a
+# NATIVE command (pip, winsw, python) into a terminating error -- it only
+# governs PowerShell's own errors. Without this the installer sailed past a
+# failed pip install, tailored a config against a package that was not there,
+# and registered a service that restart-looped every ten seconds. The operator
+# was left with a broken install and the original failure buried far above.
+#
+# Call this after every native invocation whose failure should stop us.
+function Assert-NativeOk($what){
+  if ($LASTEXITCODE -ne 0) {
+    Fatal "$what failed (exit code $LASTEXITCODE). Nothing further was installed or registered; fix the error above and re-run."
+  }
+}
+
 $script:_stepN = 0
 function Step($m){
   $script:_stepN++
@@ -205,10 +219,12 @@ Step 'Installing the SentinelX agent (virtualenv + package)'
 if (-not (Test-Path $PyExe)) {
   Info "Creating venv at $Venv"
   & $BootPy @pyPre -m venv $Venv
+  Assert-NativeOk 'Creating the virtual environment'
 }
 if (-not $Bundle) {
   Info 'Upgrading pip'
   & $PyExe -m pip install --upgrade pip | Out-Null
+  Assert-NativeOk 'Upgrading pip'
 }
 if ($Bundle) {
   # Offline install from a wheel bundle (zip or dir). For networks that block
@@ -236,12 +252,26 @@ if ($Bundle) {
   # a 0.4.1 with a fresh fix) actually replaces the installed core wheel --
   # without it, pip sees the version already present and skips the update (#9).
   & $PyExe -m pip install --no-index --no-deps --force-reinstall @whls
+  Assert-NativeOk 'Installing the agent from the offline bundle'
 } elseif ($Source) {
   Info "Installing agent (editable) from $Source"
   & $PyExe -m pip install -e $Source
+  Assert-NativeOk 'Installing the agent (editable)'
 } else {
   Info 'Installing agent from git main'
   & $PyExe -m pip install $RepoUrl
+  Assert-NativeOk 'Installing the agent'
+}
+
+# Belt and braces: exit codes catch a pip that FAILS, this catches a pip that
+# "succeeded" without leaving a usable package -- a partial wheel, a venv built
+# against a Python that later moved, an interrupted download. Everything after
+# this point (config tailoring, service registration) assumes the agent imports,
+# and registering a service that cannot import restart-loops forever while the
+# real cause scrolls out of view.
+& $PyExe -c "import sentinelx_core, yaml" 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Fatal "The agent package is not importable from $Venv after installation. Nothing was configured or registered. Re-run the installer; if it persists, the pip output above is the place to look."
 }
 
 Step 'Identity & configuration'
