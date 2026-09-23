@@ -274,6 +274,54 @@ if ($LASTEXITCODE -ne 0) {
   Fatal "The agent package is not importable from $Venv after installation. Nothing was configured or registered. Re-run the installer; if it persists, the pip output above is the place to look."
 }
 
+# --- enrollment token handling ----------------------------------------------
+# Read a JWT payload WITHOUT verifying it. There is no key here; the hub
+# verifies. This only decides whether to write the token as-is or exchange it,
+# so a forged payload gains nothing: the hub rejects it at the exchange or on
+# connect. Mirrors enroll.py so Windows and Linux behave the same.
+function Get-TokenClaims([string]$Token) {
+  try {
+    $seg = ($Token -split '\.')[1].Replace('-', '+').Replace('_', '/')
+    switch ($seg.Length % 4) { 2 { $seg += '==' } 3 { $seg += '=' } }
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($seg))
+    return ($json | ConvertFrom-Json)
+  } catch {
+    return [pscustomobject]@{}
+  }
+}
+
+# Trade a one-time enrollment token for this host's session credential. Every
+# failure calls Fatal BEFORE identity.json is written: the installer skips
+# enrollment whenever that file exists, so a file holding a token that never
+# worked would strand the host, and re-running would not fix it.
+function Invoke-EnrollExchange([string]$Hub, [string]$Token) {
+  $url = "$($Hub.TrimEnd('/'))/agent/enroll"
+  try {
+    $r = Invoke-RestMethod -Method Post -Uri $url -Headers @{ Authorization = "Bearer $Token" } -Body '' -TimeoutSec 30
+  } catch {
+    $code = $null; $err = $null
+    try { $code = [int]$_.Exception.Response.StatusCode } catch {}
+    try { $err = ($_.ErrorDetails.Message | ConvertFrom-Json).error } catch {}
+    if ($err -eq 'enrollment_token_already_used') {
+      Fatal 'This enrollment token was already used. Enrollment tokens work once; generate a new one from the dashboard and run the installer again.'
+    }
+    if ($err -eq 'expired') {
+      Fatal 'This enrollment token has expired. Generate a new one from the dashboard and run the installer again.'
+    }
+    if ($err -eq 'host_disabled') {
+      Fatal 'This host id has been disabled on your account, so it cannot be enrolled. Generate a token for a new host from the dashboard.'
+    }
+    if ($code) {
+      Fatal "The hub refused the enrollment token (HTTP $code, $err). Nothing was written."
+    }
+    Fatal "Could not reach $Hub to exchange the enrollment token: $($_.Exception.Message). Nothing was written; check connectivity and re-run."
+  }
+  if (-not $r -or -not $r.ok -or -not $r.credential -or (([string]$r.credential -split '\.').Count -ne 3)) {
+    Fatal 'The hub did not return a host credential. Nothing was written.'
+  }
+  return [string]$r.credential
+}
+
 Step 'Identity & configuration'
 # 3) identity + config
 if (-not (Test-Path $IdentityPath)) {
@@ -281,9 +329,31 @@ if (-not (Test-Path $IdentityPath)) {
     Info "Importing identity.json from $ImportFrom"
     Copy-Item (Join-Path $ImportFrom 'identity.json') $IdentityPath -Force
   } else {
-    Info "Enroll in your browser: $HubUrl/auth/dashboard/enroll?host_id=$HostId"
-    $tok = Read-Host 'Paste enrollment token'
-    @{ host_id = $HostId; token = $tok; hub = $HubUrl } | ConvertTo-Json |
+    $envTok = $env:SENTINELX_ENROLL_TOKEN
+    if ($envTok) {
+      $tok = $envTok.Trim()
+      Info 'Using SENTINELX_ENROLL_TOKEN (non-interactive enrollment).'
+    } else {
+      Info "Enroll in your browser: $HubUrl/auth/dashboard/enroll?host_id=$HostId"
+      $tok = ([string](Read-Host 'Paste enrollment token')).Trim()
+    }
+    # Refuse an obviously broken paste NOW, before anything is written, instead
+    # of letting the agent loop on an opaque rejection later.
+    if (($tok -split '\.').Count -ne 3) {
+      Fatal 'That does not look like an enrollment token (expected 3 dot-separated segments). Nothing was written.'
+    }
+    $idHost = $HostId
+    $claims = Get-TokenClaims $tok
+    # A non-interactive token was not minted for the id this run generated; the
+    # hub treats the token's own host_id as authoritative, so use it.
+    if ($envTok -and $claims.host_id) { $idHost = [string]$claims.host_id }
+    # A one-time enrollment token is exchanged BEFORE anything is written.
+    # Legacy tokens (no typ) -- every token issued today -- are written as-is.
+    if ($claims.typ -eq 'enroll') {
+      if ($claims.host_id) { $idHost = [string]$claims.host_id }
+      $tok = Invoke-EnrollExchange -Hub $HubUrl -Token $tok
+    }
+    @{ host_id = $idHost; token = $tok; hub = $HubUrl } | ConvertTo-Json |
       Set-Content -Encoding ascii $IdentityPath
   }
 }
