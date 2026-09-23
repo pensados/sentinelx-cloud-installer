@@ -1,0 +1,21 @@
+name: windows-ps51-check
+
+# install.ps1 targets Windows PowerShell 5.1. `shell: powershell` on
+# windows-latest IS 5.1 (`pwsh` would be 7) -- that is the whole point.
+on:
+  push:
+    branches: [install-ps1-enroll-exchange]
+    paths: [install.ps1, tests/test_install_ps1.ps1, .github/workflows/windows-ps51-check.yml]
+  workflow_dispatch:
+
+jobs:
+  ps51:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.ps1 under Windows PowerShell 5.1
+        shell: powershell
+        env:
+          DEV_HUB: https://mcp-dev.pensa.ar
+          ENROLL_TOKEN_OK: ${{ secrets.CI_ENROLL_TOKEN }}
+        run: ./tests/test_install_ps1.ps1
