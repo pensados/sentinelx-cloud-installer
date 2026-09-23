@@ -24,12 +24,16 @@ without pip-installing anything.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 import signal
 import socket
 import sys
 import threading
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -217,6 +221,91 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
     return {"token": token, "host_id": host_id}
 
 
+def _claims_unverified(token: str) -> dict:
+    """Read a JWT's payload WITHOUT verifying it.
+
+    There is no key here; the hub verifies. This only decides what to DO with
+    the token -- write it as-is, or exchange it -- so a forged payload gains
+    nothing: the hub rejects it at the exchange or on connect.
+    """
+    try:
+        seg = token.split(".")[1]
+        seg += "=" * (-len(seg) % 4)
+        data = json.loads(base64.urlsafe_b64decode(seg))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+_EXCHANGE_ERRORS = {
+    "enrollment_token_already_used": (
+        "This enrollment token was already used. Enrollment tokens work once;\n"
+        "generate a new one from the dashboard and run the installer again."
+    ),
+    "expired": (
+        "This enrollment token has expired. Generate a new one from the\n"
+        "dashboard and run the installer again."
+    ),
+    "host_disabled": (
+        "This host id has been disabled on your account, so it cannot be\n"
+        "enrolled. Generate a token for a new host from the dashboard."
+    ),
+}
+
+
+def exchange_enrollment_token(hub: str, token: str) -> str:
+    """Trade a one-time enrollment token for this host's session credential.
+
+    Exits on ANY failure without writing identity.json. That matters: the
+    installer skips enrollment whenever identity.json exists, so a file written
+    with a token that never worked would leave a host that silently never
+    connects, and re-running would not fix it.
+    """
+    url = f"{hub.rstrip('/')}/agent/enroll"
+    req = urllib.request.Request(
+        url,
+        data=b"",
+        method="POST",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            err = json.loads(exc.read().decode("utf-8") or "{}").get("error")
+        except Exception:  # noqa: BLE001
+            err = None
+        raise SystemExit(
+            _EXCHANGE_ERRORS.get(err or "")
+            or f"The hub refused the enrollment token (HTTP {exc.code}, {err or 'no detail'})."
+        )
+    except (urllib.error.URLError, OSError) as exc:
+        raise SystemExit(
+            f"Could not reach {hub} to exchange the enrollment token: {exc}\n"
+            "Nothing was written; check connectivity and run the installer again."
+        )
+    cred = body.get("credential") if isinstance(body, dict) else None
+    if not isinstance(body, dict) or not body.get("ok") or not isinstance(cred, str) \
+            or cred.count(".") != 2:
+        raise SystemExit("The hub did not return a host credential. Nothing was written.")
+    return cred
+
+
+def run_env_mode(token: str, host_id: str) -> dict[str, str]:
+    """Non-interactive enrollment from SENTINELX_ENROLL_TOKEN.
+
+    For hosts provisioned by automation, where nobody is there to paste. The
+    token's own host_id is used: it was not minted for the id this installer
+    run generated, and the hub treats the claim as authoritative anyway.
+    """
+    token = token.strip()
+    if token.count(".") != 2:
+        raise SystemExit("SENTINELX_ENROLL_TOKEN doesn't look like a JWT (expected 3 segments).")
+    print("Using SENTINELX_ENROLL_TOKEN (non-interactive enrollment).", file=sys.stderr)
+    return {"token": token, "host_id": _claims_unverified(token).get("host_id") or host_id}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Enroll this host with SentinelX")
     parser.add_argument("--hub", required=True, help="Hub base URL (e.g. https://mcp.sentinelx.app)")
@@ -230,14 +319,28 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.mode == "paste":
+    env_token = os.environ.get("SENTINELX_ENROLL_TOKEN", "").strip()
+    if env_token:
+        result = run_env_mode(env_token, args.host_id)
+    elif args.mode == "paste":
         result = run_paste_mode(args.hub, args.host_id)
     else:
         result = run_browser_mode(args.hub, args.host_id)
 
+    token = result["token"]
+    host_id = result.get("host_id", args.host_id)
+
+    # A one-time enrollment token is exchanged for the host's session
+    # credential BEFORE anything is written. Legacy tokens (no `typ`) are
+    # written exactly as before -- that is every token issued today.
+    claims = _claims_unverified(token)
+    if claims.get("typ") == "enroll":
+        host_id = claims.get("host_id") or host_id
+        token = exchange_enrollment_token(args.hub, token)
+
     identity = {
-        "host_id": result.get("host_id", args.host_id),
-        "token": result["token"],
+        "host_id": host_id,
+        "token": token,
         "hub": args.hub,
     }
 
