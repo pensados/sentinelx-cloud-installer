@@ -403,6 +403,21 @@ else
     chown sentinelx:sentinelx "$ETC_DIR/identity.json"
 fi
 
+# --- reconcile host_id with what was actually enrolled ------------------------
+# In non-interactive mode (SENTINELX_ENROLL_TOKEN) enroll.py records the token's
+# own host id, which is not the one this run generated. identity.json is what
+# the agent uses, so make HOST_ID -- shown in the summary -- and the persisted
+# host_id agree with it. When they already match (every interactive install),
+# nothing changes. Never fatal: `|| true` keeps a missing or unreadable file
+# from aborting an install that has otherwise finished.
+ENROLLED_HOST_ID="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1]))["host_id"])' \
+    "$ETC_DIR/identity.json" 2>/dev/null || true)"
+if [[ -n "$ENROLLED_HOST_ID" && "$ENROLLED_HOST_ID" != "$HOST_ID" ]]; then
+    HOST_ID="$ENROLLED_HOST_ID"
+    echo "$HOST_ID" > "$ETC_DIR/host_id"
+    chmod 644 "$ETC_DIR/host_id"
+fi
+
 # --- minimal config ----------------------------------------------------------
 if [[ ! -f "$ETC_DIR/config.yaml" ]]; then
     # Use the rich example config shipped in the core repo as the starting
