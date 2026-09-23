@@ -119,13 +119,11 @@ python ~/sentinelx/enroll.py \
 Follow its prompt (open the URL, sign in, paste the token). It writes
 `~/sentinelx/identity.json` — `{host_id, token, hub}`.
 
-**Or fully manual** — write the file yourself after copying the token from that URL:
-
-```bash
-cat > ~/sentinelx/identity.json <<EOF
-{"host_id": "$HOST_ID", "token": "PASTE_TOKEN_HERE", "hub": "https://mcp.sentinelx.app"}
-EOF
-```
+> **Don't write `identity.json` by hand.** Dashboard tokens are one-time
+> enrollment tokens: `enroll.py` exchanges yours once for this host's own
+> credential and writes *that*. A pasted token saved straight into the file is
+> never exchanged, and the agent is refused on connect. `enroll.py` handles
+> both one-time and older tokens, so it is the one supported way.
 
 ## 5. Run the agent
 
