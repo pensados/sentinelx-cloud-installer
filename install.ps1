@@ -323,6 +323,47 @@ print("  tailored: " + home + " (r), " + ws + " (rw), config self-managed, backe
   }
 }
 
+
+# --- Migrate an existing config's service backend to match the real install ---
+# The tailoring above only runs for a FRESH config. On an UPGRADE the config is
+# preserved untouched, so a user-mode host installed before the Scheduled-Task
+# backend existed keeps services.sentinelx.backend = "service". sentinel_restart
+# then routes through the SCM/WinSW path and fails service_restart_unsafe, even
+# though the running install is a Scheduled Task and 0.18.3 has a correct task
+# backend. Reported by a paying operator; reproduced on our own Spanish host.
+#
+# Fix the field in place, every run, for the mode we are actually installing.
+# Idempotent: if it already matches, nothing is written.
+if (Test-Path $ConfigPath) {
+  Info 'Checking service backend matches install mode'
+  $wantBackend = if ($User) { 'task' } else { 'service' }
+  $migrate = @'
+import sys, yaml
+cfg_path, want = sys.argv[1], sys.argv[2]
+try:
+    cfg = yaml.safe_load(open(cfg_path, encoding="utf-8").read()) or {}
+except Exception as e:
+    print("  backend check skipped (config unreadable): " + str(e)); sys.exit(0)
+svc = (cfg.get("services") or {}).get("sentinelx")
+if not isinstance(svc, dict):
+    print("  no services.sentinelx block; nothing to migrate"); sys.exit(0)
+cur = svc.get("backend")
+if cur == want:
+    print("  backend already '" + want + "'; no change"); sys.exit(0)
+svc["backend"] = want
+# Keep the human-readable description honest too, if it named the old mechanism.
+desc = svc.get("description") or ""
+if want == "task" and "WinSW" in desc:
+    svc["description"] = "The SentinelX agent itself (Scheduled Task)."
+elif want == "service" and "Scheduled Task" in desc:
+    svc["description"] = "The SentinelX agent itself (WinSW service)."
+open(cfg_path, "w", encoding="utf-8").write(
+    yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True, width=100))
+print("  migrated service backend: '" + str(cur) + "' -> '" + want + "'")
+'@
+  $migrate | & $PyExe - $ConfigPath $wantBackend
+}
+
 Step 'Registering startup & launching the agent'
 # 4) startup mechanism
 if ($User) {
