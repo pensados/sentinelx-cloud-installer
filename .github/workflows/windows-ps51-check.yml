@@ -4,9 +4,13 @@ name: windows-ps51-check
 # windows-latest IS 5.1 (`pwsh` would be 7) -- that is the whole point.
 on:
   push:
-    branches: [install-ps1-enroll-exchange]
+    branches: [main]
+    paths: [install.ps1, tests/test_install_ps1.ps1, .github/workflows/windows-ps51-check.yml]
+  pull_request:
     paths: [install.ps1, tests/test_install_ps1.ps1, .github/workflows/windows-ps51-check.yml]
   workflow_dispatch:
+# The real-exchange section needs a single-use token in the CI_ENROLL_TOKEN
+# secret and skips without one; everything else runs on every change.
 
 jobs:
   ps51:
