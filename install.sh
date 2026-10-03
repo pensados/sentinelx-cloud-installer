@@ -487,6 +487,14 @@ ExecStart=$INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\
 Restart=always
 RestartSec=5
 
+# Stopping or restarting the agent ends the agent, not what it started. With
+# the default (control-group), systemd kills every process in this unit's
+# cgroup, and everything launched through SentinelX lives there, nohup or not:
+# an update or a restart took down users' long-running workloads with it
+# (one host had ~20 GB of project processes in this cgroup). Those processes
+# stay in the cgroup until they exit, and systemd logs them as left over.
+KillMode=process
+
 # Scheduling priority. The agent needs very little of the machine, but it needs
 # it promptly. On a saturated host it otherwise cannot answer its keepalive --
 # or even finish the handshake within the connect deadline -- and the operator
