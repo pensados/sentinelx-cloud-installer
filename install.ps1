@@ -31,6 +31,16 @@
                  https URL to a .zip) instead of PyPI -- for networks that block
                  PyPI (corporate filters). Installs every wheel with --no-deps.
     -Check       Dry-run: print the plan, touch nothing. Does NOT require admin.
+    -MigrateFromUser
+                 Service mode only: switch a machine that runs the USER-mode agent
+                 to service mode. Stops and removes the per-user Scheduled Task,
+                 reuses its identity.json and config.yaml (paths rewritten to the
+                 new install dir), and keeps the old folder as a backup.
+
+  Use ONE mode per machine. Both register under the name 'SentinelX' (service or
+  Scheduled Task); installing one mode while the other is present would run two
+  agents with the same identity that keep replacing each other's hub connection,
+  so the installer stops instead (re-run in the installed mode, or migrate).
 
   Service-mode real installs need an ELEVATED PowerShell. -User and -Check do not.
 #>
@@ -43,7 +53,8 @@ param(
   [string]$Source,
   [string]$ImportFrom,
   [string]$Bundle,
-  [switch]$Check
+  [switch]$Check,
+  [switch]$MigrateFromUser
 )
 $ErrorActionPreference = 'Stop'
 
@@ -171,6 +182,30 @@ function Resolve-WinswUrl {
 
 Write-Banner
 
+# ------------------------- one mode per machine ---------------------------
+# Both modes register under $SvcId: a Windows service (service mode) or a
+# Scheduled Task (user mode). Installing one while the other is present leaves
+# two agents with one identity that keep replacing each other's connection
+# (win-comet, 2026-10-06: 192 version flips in an hour after an update run in
+# the other mode). Querying a service needs no admin; an elevated session sees
+# other users' tasks.
+function Get-ServiceModeInstall {
+  Get-Service -Name $SvcId -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+function Get-UserModeInstall {
+  $t = Get-ScheduledTask -TaskName $SvcId -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $t) { return $null }
+  $exe = [string](($t.Actions | Select-Object -First 1).Execute)
+  $dir = $null
+  if ($exe -match '^(.+?)\\\.venv\\Scripts\\pythonw?\.exe$') { $dir = $Matches[1] }
+  [pscustomobject]@{ Task = $t; Dir = $dir; Who = [string]$t.Principal.UserId }
+}
+$OtherSvc  = if ($User) { Get-ServiceModeInstall } else { $null }
+$OtherTask = if (-not $User) { Get-UserModeInstall } else { $null }
+$MsgSvc = "This machine already runs SentinelX as a Windows service (C:\ProgramData\SentinelX). " +
+          "Update that one instead: run this installer WITHOUT -User, from an elevated PowerShell. " +
+          "A user-mode agent next to it would share its identity and keep replacing its connection."
+
 # ------------------------- CHECK (dry-run) --------------------------------
 if ($Check) {
   Info 'check mode - nothing will be installed.'
@@ -180,6 +215,11 @@ if ($Check) {
   if ($Source)     { Info "Source     : $Source (EDITABLE install)" } else { Info "Source     : $RepoUrl (git main)" }
   if ($ImportFrom) { Info "ImportFrom : $ImportFrom (reuse identity/config)" }
   if ($Bundle)     { Info "Bundle     : $Bundle (OFFLINE install, no PyPI)" }
+  if ($OtherSvc)  { Warn "CONFLICT   : $MsgSvc" }
+  if ($OtherTask) {
+    if ($MigrateFromUser) { Info "Migrate    : user-mode install in $($OtherTask.Dir) (task for $($OtherTask.Who)) would be stopped, removed and kept as a backup" }
+    else { Warn "CONFLICT   : a user-mode install exists (task '$SvcId' for $($OtherTask.Who), dir $($OtherTask.Dir)). A real run stops here; re-run with -User to update it, or with -MigrateFromUser to switch to service mode." }
+  }
   if ($User) {
     Info "Startup    : per-user Scheduled Task '$SvcId' at logon, running:"
     Info "             $PywExe -m sentinelx_core --hub $HubUrl --identity `"$IdentityPath`" --config `"$ConfigPath`" --log-file `"$AgentLog`""
@@ -196,6 +236,34 @@ if (-not $User -and -not (Test-Admin)) {
   Fatal 'Service mode needs an ELEVATED PowerShell (Run as administrator). On a machine where you are not a local admin, use -User for a no-admin per-user install. (-Check is a no-admin dry-run.)'
 }
 
+if ($MigrateFromUser -and $User) {
+  Fatal '-MigrateFromUser switches a machine TO service mode; it cannot be combined with -User.'
+}
+if ($OtherSvc) { Fatal $MsgSvc }
+$MigrateFrom = $null
+if ($OtherTask) {
+  if (-not $MigrateFromUser) {
+    Fatal ("A user-mode SentinelX install already exists (Scheduled Task '$SvcId' for $($OtherTask.Who), dir: $($OtherTask.Dir)). " +
+           "To update it, re-run this installer with -User (no admin needed). To switch this machine to service mode, " +
+           "re-run with -MigrateFromUser: it stops and removes that task, reuses its identity and config, and keeps the old folder as a backup. " +
+           "Nothing was changed.")
+  }
+  $MigrateFrom = $OtherTask
+  Info "Migrating from the user-mode install in $($MigrateFrom.Dir) (task for $($MigrateFrom.Who))."
+  $oldId = if ($MigrateFrom.Dir) { Join-Path $MigrateFrom.Dir 'identity.json' } else { $null }
+  if ($oldId -and (Test-Path $oldId)) {
+    if (-not (Test-Path $IdentityPath) -and -not $ImportFrom) {
+      $ImportFrom = $MigrateFrom.Dir
+      Info "Reusing its identity and config (same host, no new enrollment token)."
+    } elseif (Test-Path $IdentityPath) {
+      $a = (Get-Content $IdentityPath -Raw | ConvertFrom-Json).host_id
+      $b = (Get-Content $oldId -Raw | ConvertFrom-Json).host_id
+      Warn "This service install already has an identity (host $a); keeping it. The user-mode one (host $b) stays in the backup folder."
+    }
+  } elseif (-not $MigrateFrom.Dir) {
+    Warn "Could not tell the user-mode install folder from the task; its identity is not reused. The task and its processes are still stopped."
+  }
+}
 Info ("Plan: " + $(if ($User) { 'USER install (Scheduled Task, no admin)' } else { 'SERVICE install (WinSW, starts at boot)' }) + "  |  dir: $InstallDir  |  host: $HostId")
 
 Step 'Checking prerequisites (Python + install dir)'
@@ -394,6 +462,32 @@ print("  tailored: " + home + " (r), " + ws + " (rw), config self-managed, backe
 }
 
 
+# --- Migration: point an imported user-mode config at the new install dir ---
+# Its file_ops paths and upload_base live under the old %LOCALAPPDATA% folder,
+# which is renamed to a backup below; left as-is they would point into it.
+if ($MigrateFrom -and $MigrateFrom.Dir -and $ImportFrom -eq $MigrateFrom.Dir) {
+  $rewrite = @'
+import sys, yaml
+cfg_path, old, new = sys.argv[1], sys.argv[2].rstrip("\\"), sys.argv[3].rstrip("\\")
+cfg = yaml.safe_load(open(cfg_path, encoding="utf-8").read()) or {}
+def fix(v):
+    # The folder itself or something inside it; never a sibling like ...\\SentinelX2.
+    if not isinstance(v, str):
+        return v
+    lv, lo = v.lower(), old.lower()
+    return new + v[len(old):] if lv == lo or lv.startswith(lo + "\\") else v
+n = 0
+for e in ((cfg.get("file_ops") or {}).get("paths") or []):
+    if isinstance(e, dict) and fix(e.get("path")) != e.get("path"):
+        e["path"] = fix(e["path"]); n += 1
+if fix(cfg.get("upload_base")) != cfg.get("upload_base"):
+    cfg["upload_base"] = fix(cfg["upload_base"]); n += 1
+open(cfg_path, "w", encoding="utf-8").write(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True, width=100))
+print("  config paths moved to the new install dir: " + str(n))
+'@
+  $rewrite | & $PyExe - $ConfigPath $MigrateFrom.Dir $InstallDir
+}
+
 # --- Migrate an existing config's service backend to match the real install ---
 # The tailoring above only runs for a FRESH config. On an UPGRADE the config is
 # preserved untouched, so a user-mode host installed before the Scheduled-Task
@@ -467,6 +561,21 @@ if ($User) {
   }
 } else {
   # ---- SERVICE mode: WinSW (LocalSystem, boot) ---------------------------
+  if ($MigrateFrom) {
+    # Only now, with everything else in place: a failure earlier leaves the
+    # user-mode agent running, never a machine with no agent.
+    Info "Stopping and removing the user-mode Scheduled Task '$SvcId'"
+    Stop-ScheduledTask -TaskName $SvcId -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $SvcId -Confirm:$false -ErrorAction SilentlyContinue
+    if ($MigrateFrom.Dir) {
+      Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like "*$($MigrateFrom.Dir)*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+      Start-Sleep -Seconds 2
+      $bak = "$($MigrateFrom.Dir).migrated-$(Get-Date -Format yyyyMMdd-HHmmss)"
+      try { Move-Item -LiteralPath $MigrateFrom.Dir -Destination $bak; Info "Old user-mode folder kept as $bak" }
+      catch { Warn "Could not rename $($MigrateFrom.Dir) ($($_.Exception.Message)); its agent is stopped and its task removed, so it will not start again." }
+    }
+  }
   if (-not (Test-Path $WinswExe)) {
     $url = Resolve-WinswUrl
     Info "Downloading WinSW: $url"
