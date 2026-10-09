@@ -75,6 +75,16 @@ Check 'env legacy: token host_id used' ($id.host_id -eq 'host_legacy')
 $r = Invoke-Block 'no-es-un-token' ''
 Check 'paste garbage: refused' ($r -like 'FATAL: That does not look like an enrollment token*') $r
 Check 'paste garbage: nothing written' (-not (Test-Path $IdentityPath))
+# A one-time token that lost characters when it was copied (sxrep_VV880Z9JHFXV).
+# Whether its payload stays readable depends on where the cut falls:
+$segs = $enroll -split '\.'
+# - a cut that misaligns the base64 leaves it unreadable: it used to be written
+#   as a legacy token; now it is refused before anything is written.
+$cut = $segs[0] + '.' + $segs[1].Substring(0, 10) + $segs[1].Substring(31) + '.' + $segs[2]
+Check 'cut token: claims unreadable' (@((Get-TokenClaims $cut).PSObject.Properties).Count -eq 0)
+$r = Invoke-Block $cut ''
+Check 'cut token: refused as damaged' ($r -like 'FATAL: This token is damaged*') $r
+Check 'cut token: nothing written' (-not (Test-Path $IdentityPath))
 $r = Invoke-Block '' ''
 Check 'paste empty: refused, nothing written' (($r -like 'FATAL:*') -and -not (Test-Path $IdentityPath)) $r
 

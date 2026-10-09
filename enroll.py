@@ -237,6 +237,13 @@ def _claims_unverified(token: str) -> dict:
         return {}
 
 
+DAMAGED_TOKEN = (
+    "This token is damaged: part of it was lost when it was copied, so it can't\n"
+    "be read. Nothing was written. Generate a new one from the dashboard and\n"
+    "paste it exactly as shown, without retyping it."
+)
+
+
 _EXCHANGE_ERRORS = {
     "enrollment_token_already_used": (
         "This enrollment token was already used. Enrollment tokens work once;\n"
@@ -334,6 +341,14 @@ def main() -> None:
     # credential BEFORE anything is written. Legacy tokens (no `typ`) are
     # written exactly as before -- that is every token issued today.
     claims = _claims_unverified(token)
+    if not claims:
+        # A token whose payload can't be read was damaged on the way here: cut
+        # or retyped when it was copied (sxrep_BJNC0WGMBMGN, sxrep_VV880Z9JHFXV:
+        # 638 of ~658 characters). It used to fall through to the legacy branch
+        # below and be written as-is, leaving an identity the hub rejects on
+        # every connect -- and since install.sh skips enrollment whenever
+        # identity.json exists, every re-run kept the broken one.
+        raise SystemExit(DAMAGED_TOKEN)
     if claims.get("typ") == "enroll":
         host_id = claims.get("host_id") or host_id
         token = exchange_enrollment_token(args.hub, token)

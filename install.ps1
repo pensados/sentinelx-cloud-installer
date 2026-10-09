@@ -412,6 +412,13 @@ if (-not (Test-Path $IdentityPath)) {
     }
     $idHost = $HostId
     $claims = Get-TokenClaims $tok
+    # A token whose payload can't be read was damaged when it was copied (cut or
+    # retyped; sxrep_VV880Z9JHFXV lost 20 of ~658 characters). It used to fall
+    # through to the legacy branch and be written as-is, leaving an identity the
+    # hub rejects forever -- and a re-run skips enrollment because the file exists.
+    if (@($claims.PSObject.Properties).Count -eq 0) {
+      Fatal 'This token is damaged: part of it was lost when it was copied, so it cannot be read. Nothing was written. Generate a new one from the dashboard and paste it exactly as shown, without retyping it.'
+    }
     # A non-interactive token was not minted for the id this run generated; the
     # hub treats the token's own host_id as authoritative, so use it.
     if ($envTok -and $claims.host_id) { $idHost = [string]$claims.host_id }
