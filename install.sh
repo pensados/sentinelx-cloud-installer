@@ -119,6 +119,55 @@ echo ""
 
 info()  { echo "${c_grn}[+]${c_rst} $*"; }
 warn()  { echo "${c_yel}[!]${c_rst} $*"; }
+
+# --- BEGIN agent-home preservation (tested in tests/test_install_preserve.sh) ---
+# INSTALL_DIR is also the 'sentinelx' user's HOME (useradd --home-dir below), so
+# the clean reinstall's `rm -rf` deleted ~/.ssh (deploy keys, known_hosts),
+# ~/.gitconfig and anything else kept there, on every update, including
+# sentinel_agent_update (sxrep_PQG3QSK9V8M0: a GitHub deploy key gone after
+# 0.11.18 -> 0.23.16). The code is still replaced cleanly; what isn't code is
+# moved aside first and put back after the clone.
+preserve_agent_home() {   # $1 = install dir; prints the holding dir ("" if none)
+    local dir="$1" hold tracked name entry
+    [[ -d "$dir" ]] || { echo ""; return 0; }
+    hold="$(mktemp -d "$(dirname "$dir")/.sentinelx-preserve.XXXXXX")"
+    tracked=""
+    if [[ -d "$dir/.git" ]]; then
+        tracked="$(git -C "$dir" -c safe.directory="$dir" ls-files 2>/dev/null | cut -d/ -f1 | sort -u || true)"
+    fi
+    shopt -s dotglob nullglob
+    for entry in "$dir"/*; do
+        name="$(basename "$entry")"
+        case "$name" in .git|.venv|.github|.gitignore|__pycache__) continue ;; esac
+        if [[ -n "$tracked" ]]; then
+            grep -qxF -- "$name" <<<"$tracked" && continue
+        elif [[ "$name" != .* ]]; then
+            continue    # no git metadata: only keep dotfiles, can't tell code from user files
+        fi
+        mv -- "$entry" "$hold/"
+    done
+    shopt -u dotglob nullglob
+    echo "$hold"
+}
+
+restore_agent_home() {    # $1 = install dir, $2 = holding dir from preserve_agent_home
+    local dir="$1" hold="$2" entry name stamp
+    [[ -n "$hold" && -d "$hold" ]] || return 0
+    stamp="$(date +%Y%m%d%H%M%S)"
+    shopt -s dotglob nullglob
+    for entry in "$hold"/*; do
+        name="$(basename "$entry")"
+        if [[ -e "$dir/$name" ]]; then
+            mv -- "$entry" "$dir/$name.preserved-$stamp"
+            warn "Kept your $name as $name.preserved-$stamp (the new release ships its own $name)"
+        else
+            mv -- "$entry" "$dir/"
+        fi
+    done
+    shopt -u dotglob nullglob
+    rmdir "$hold" 2>/dev/null || true
+}
+# --- END agent-home preservation ---
 err()   { echo "${c_red}[!]${c_rst} $*" >&2; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
@@ -340,7 +389,9 @@ fi
 # --- install core code via git clone -----------------------------------------
 info "Installing sentinelx-cloud-core to $INSTALL_DIR"
 
-# Clean install: remove anything that was there before
+# Clean install of the CODE: remove what was there before, but keep the agent
+# user's own files (this directory is also its HOME; see preserve_agent_home).
+PRESERVE_HOLD="$(preserve_agent_home "$INSTALL_DIR")"
 if [[ -d "$INSTALL_DIR" ]]; then
     rm -rf "$INSTALL_DIR"
 fi
@@ -348,6 +399,7 @@ mkdir -p "$INSTALL_DIR"
 
 # Shallow clone for speed and disk
 git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" "$INSTALL_DIR"
+restore_agent_home "$INSTALL_DIR" "$PRESERVE_HOLD"
 
 # Install in a venv to avoid polluting the system Python.
 #
