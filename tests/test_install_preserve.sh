@@ -8,6 +8,9 @@ warn() { echo "[!] $*"; }
 source <(sed -n '/^# --- BEGIN agent-home preservation/,/^# --- END agent-home preservation/p' "$HERE/install.sh")
 fail() { echo "FAIL: $*"; exit 1; }
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+# Isolate git: `git config --global` below must not touch the real ~/.gitconfig
+# of whoever runs the test (it did, and broke git tests that expect master).
+export HOME="$W/home"; mkdir -p "$HOME"
 git config --global user.email t@t; git config --global user.name t; git config --global init.defaultBranch main
 
 # the "new release" repo
