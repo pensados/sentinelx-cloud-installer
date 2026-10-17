@@ -168,6 +168,48 @@ restore_agent_home() {    # $1 = install dir, $2 = holding dir from preserve_age
     rmdir "$hold" 2>/dev/null || true
 }
 # --- END agent-home preservation ---
+
+# --- BEGIN code install (tested in tests/test_install_code.sh) ---
+# Install the agent code without ever leaving the host with none. The old flow
+# deleted $INSTALL_DIR and then cloned into it: when the clone failed (GitHub
+# blocked by host policy, no network, GitHub down) the host was left with an
+# empty install dir, the agent alive only in memory, and the agent user's files
+# stranded in a holding dir (sxrep_AWPBMJKC9DG8). Now the code is downloaded
+# NEXT TO the live install first; only a complete download is swapped in, the
+# previous install is moved aside rather than deleted, and it is put back if
+# the Python setup fails.
+stage_core_code() {    # $1 install dir, $2 repo, $3 ref; prints the staging dir. Fails touching nothing.
+    local dir="$1" repo="$2" ref="$3" stage
+    mkdir -p "$(dirname "$dir")"
+    stage="$(mktemp -d "$(dirname "$dir")/.sentinelx-new.XXXXXX")"
+    if ! git clone --quiet --depth 1 --branch "$ref" "$repo" "$stage" >&2; then
+        rm -rf -- "$stage"
+        return 1
+    fi
+    echo "$stage"
+}
+
+swap_in_core_code() {  # $1 install dir, $2 staging dir; prints where the previous install went ("" if none)
+    local dir="$1" stage="$2" hold prev=""
+    hold="$(preserve_agent_home "$dir")"
+    if [[ -d "$dir" ]]; then
+        prev="$(dirname "$dir")/.sentinelx-prev.$(date +%Y%m%d%H%M%S)"
+        mv -- "$dir" "$prev"
+    fi
+    mv -- "$stage" "$dir"
+    restore_agent_home "$dir" "$hold"
+    echo "$prev"
+}
+
+rollback_core_code() { # $1 install dir, $2 previous install: put it back, the user's files included
+    local dir="$1" prev="$2" hold
+    [[ -n "$prev" && -d "$prev" ]] || return 0
+    hold="$(preserve_agent_home "$dir")"
+    rm -rf -- "$dir"
+    mv -- "$prev" "$dir"
+    restore_agent_home "$dir" "$hold"
+}
+# --- END code install ---
 err()   { echo "${c_red}[!]${c_rst} $*" >&2; }
 fatal() { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
@@ -389,17 +431,13 @@ fi
 # --- install core code via git clone -----------------------------------------
 info "Installing sentinelx-cloud-core to $INSTALL_DIR"
 
-# Clean install of the CODE: remove what was there before, but keep the agent
-# user's own files (this directory is also its HOME; see preserve_agent_home).
-PRESERVE_HOLD="$(preserve_agent_home "$INSTALL_DIR")"
-if [[ -d "$INSTALL_DIR" ]]; then
-    rm -rf "$INSTALL_DIR"
+# Download first, next to the live install (see "code install" above): a failed
+# download changes nothing. The agent user's own files move to the new code
+# (this directory is also its HOME; see preserve_agent_home).
+if ! STAGE="$(stage_core_code "$INSTALL_DIR" "$CORE_REPO" "$CORE_REF")"; then
+    fatal "Couldn't download the agent from $CORE_REPO ($CORE_REF). Nothing was changed: the installed agent is intact. If this host can't reach GitHub, set SENTINELX_CORE_REPO to a mirror of https://github.com/pensados/sentinelx-cloud-core and run again."
 fi
-mkdir -p "$INSTALL_DIR"
-
-# Shallow clone for speed and disk
-git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" "$INSTALL_DIR"
-restore_agent_home "$INSTALL_DIR" "$PRESERVE_HOLD"
+PREV_INSTALL="$(swap_in_core_code "$INSTALL_DIR" "$STAGE")"
 
 # Install in a venv to avoid polluting the system Python.
 #
@@ -413,9 +451,12 @@ restore_agent_home "$INSTALL_DIR" "$PRESERVE_HOLD"
 # stale copy from .venv/lib/.../site-packages until the package is
 # reinstalled — a footgun that bit us during the May 2026 reviews.
 info "Setting up Python virtualenv"
-"$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
-"$INSTALL_DIR/.venv/bin/pip" install --quiet -e "$INSTALL_DIR"
+if ! { "$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv" \
+        && "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip \
+        && "$INSTALL_DIR/.venv/bin/pip" install --quiet -e "$INSTALL_DIR"; }; then
+    rollback_core_code "$INSTALL_DIR" "$PREV_INSTALL"
+    fatal "Couldn't install the agent's Python packages (is PyPI reachable?). The previous installation was put back; nothing else was changed."
+fi
 
 chown -R sentinelx:sentinelx "$INSTALL_DIR"
 
@@ -614,6 +655,9 @@ if systemctl is-active --quiet sentinelx-cloud-core.service; then
         'import importlib.metadata as m; print(m.version("sentinelx-cloud-core"))' \
         2>/dev/null || echo "unknown")"
     info "SentinelX is running (agent $RUNNING_VERSION)."
+    if [[ -n "${PREV_INSTALL:-}" && -d "$PREV_INSTALL" ]]; then
+        rm -rf -- "$PREV_INSTALL"
+    fi
     echo
     echo "  Status:   systemctl status sentinelx-cloud-core"
     echo "  Logs:     journalctl -u sentinelx-cloud-core -f"
@@ -632,6 +676,9 @@ if systemctl is-active --quiet sentinelx-cloud-core.service; then
     echo "  Full guide:  https://sentinelx.app/#setup"
 else
     warn "Service did not start cleanly."
+    if [[ -n "${PREV_INSTALL:-}" && -d "$PREV_INSTALL" ]]; then
+        warn "The previous installation is kept at $PREV_INSTALL."
+    fi
     warn "Check 'journalctl -u sentinelx-cloud-core -n 50'"
     journalctl -u sentinelx-cloud-core -n 20 --no-pager
     exit 1
