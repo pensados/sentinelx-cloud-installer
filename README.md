@@ -10,6 +10,8 @@ One-line installer for the [SentinelX](https://sentinelx.app) agent — this is 
 curl -fsSL https://get.sentinelx.app | bash
 ```
 
+**Android** — inside Debian in Termux (PRoot), the Linux command above works. Setup, background and boot: [docs/ANDROID-TERMUX.md](docs/ANDROID-TERMUX.md).
+
 **Windows** — PowerShell installer (needs Python 3.12+ and `git` on `PATH`):
 
 *Service install* — runs as a Windows service at boot; needs an **elevated** PowerShell:
