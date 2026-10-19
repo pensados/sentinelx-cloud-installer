@@ -350,6 +350,7 @@ fi
 #
 # To remove later: rm /etc/sudoers.d/sentinelx
 #
+# --- BEGIN sudo choice
 SUDOERS_FILE="/etc/sudoers.d/sentinelx"
 
 # Whether this host ends up with the agent able to become root. Drives the
@@ -375,7 +376,12 @@ else
     else
         REPLY="n"
     fi
-    if [[ "$REPLY" != "y" && -t 0 ]]; then
+    if [[ "$REPLY" != "y" ]] && ! command -v visudo >/dev/null 2>&1; then
+        # Nothing to offer: answering yes could only fail (PRoot on Android,
+        # minimal containers). Tested 2026-10-19: "y" in PRoot aborted the
+        # install with a misleading "failed visudo validation".
+        info "sudo isn't installed on this system; the agent runs without it."
+    elif [[ "$REPLY" != "y" && -t 0 ]]; then
         echo
         echo "${c_yel}[?]${c_rst} Configure passwordless sudo for the 'sentinelx' user?"
         echo "    This lets the agent run systemctl, edit /etc/, install"
@@ -393,6 +399,8 @@ else
     fi
 
     if [[ "${REPLY,,}" =~ ^(y|yes)$ ]]; then
+        command -v visudo >/dev/null 2>&1 \
+            || fatal "SENTINELX_ENABLE_SUDO=1, but sudo isn't installed on this system. Install it (e.g. apt install sudo) and run the installer again, or leave SENTINELX_ENABLE_SUDO unset."
         info "Installing sudoers rule at $SUDOERS_FILE"
         # Atomic install: write to temp, validate with visudo, then rename.
         # If validation fails, sudoers stays untouched.
@@ -429,6 +437,7 @@ EOF
         info "    To grant it later: SENTINELX_ENABLE_SUDO=1 bash install.sh"
     fi
 fi
+# --- END sudo choice
 
 # --- install core code via git clone -----------------------------------------
 info "Installing sentinelx-cloud-core to $INSTALL_DIR"

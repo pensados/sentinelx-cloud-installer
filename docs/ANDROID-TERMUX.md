@@ -233,6 +233,16 @@ notification, stops runit and the agent with it. Leave Termux in the background.
 **Updating the agent**: pull and reinstall where you installed it (re-running the
 installer does this for Option B with the installer), then `sv restart sentinelx`.
 
+**Removing the service**: stop it first, then remove it. Deleting the folder of a
+running service leaves the agent running with nothing to stop it (and
+`proot-distro` then refuses to remove or reset Debian: `container is busy`).
+
+```bash
+sv down sentinelx
+sv-disable sentinelx
+rm -rf $PREFIX/var/service/sentinelx
+```
+
 ---
 
 ## Option B: Debian in PRoot
