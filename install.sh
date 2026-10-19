@@ -110,7 +110,7 @@ cat << 'EOF'
   ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝╚═╝  ╚═╝
 EOF
 echo "${c_rst}"
-echo "  ${c_bold}Cloud Installer${c_rst} — connect this server to mcp.sentinelx.app"
+echo "  ${c_bold}Cloud Installer${c_rst} — connect this server to ${HUB_URL#https://}"
 echo "  via the Model Context Protocol."
 echo ""
 echo "  ${c_yel}What you'll get:${c_rst} a SentinelX agent that lets AI assistants"
@@ -225,8 +225,10 @@ case "$ARCH" in
     *) fatal "Unsupported architecture: $ARCH" ;;
 esac
 
-# Required tools
-for cmd in curl git systemctl; do
+# Required tools. systemctl is deliberately not one of them: without systemd
+# (containers, WSL1, Debian in PRoot on Android/Termux) the install still
+# completes and the probe near the end prints how to run the agent instead.
+for cmd in curl git; do
     command -v "$cmd" >/dev/null || fatal "Missing required tool: $cmd"
 done
 
@@ -280,8 +282,8 @@ if [ -z "$PYTHON_BIN" ]; then
     err "    sudo apt update"
     err "    sudo apt install -y python3.11 python3.11-venv"
     err ""
-    err "  On Ubuntu 24.04 / Debian 12+ (Python 3.11+ in default repos):"
-    err "    sudo apt install -y python3.11 python3.11-venv python3-pip"
+    err "  On Debian 12+ / Ubuntu 24.04+ (Python 3.11+ in default repos):"
+    err "    sudo apt install -y python3 python3-venv python3-pip"
     err ""
     err "  On RHEL/Fedora:"
     err "    sudo dnf install -y python3.11"
@@ -622,14 +624,26 @@ if ! systemctl list-units --type=service --no-pager >/dev/null 2>&1; then
     warn "systemd doesn't appear to be running on this system."
     warn "Skipping systemctl steps. The agent is installed but won't auto-start."
     warn ""
+    # sudo is often absent exactly where systemd is (minimal containers, PRoot).
+    if command -v sudo >/dev/null 2>&1; then AS_AGENT="sudo -u sentinelx"; else AS_AGENT="runuser -u sentinelx --"; fi
     warn "To run it once manually:"
-    warn "  sudo -u sentinelx $INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\"
+    warn "  $AS_AGENT $INSTALL_DIR/.venv/bin/sentinelx-cloud-core \\"
     warn "      --hub $HUB_URL \\"
     warn "      --identity $ETC_DIR/identity.json \\"
     warn "      --config $ETC_DIR/config.yaml"
     warn ""
     warn "If you DO have systemd, check the unit at:"
     warn "  /etc/systemd/system/sentinelx-cloud-core.service"
+    # PRoot reports every file as owned by whoever asks, so the 'sentinelx' user
+    # separates nothing there (tested 2026-10-19: it wrote /etc and read /root).
+    if uname -r 2>/dev/null | grep -qi proot; then
+        warn ""
+        warn "This looks like PRoot (e.g. Debian in Termux on Android). There the"
+        warn "'sentinelx' user does not isolate anything: the agent can read and"
+        warn "write everything the Termux app can. To keep it running in the"
+        warn "background (runit, Termux:Boot), see:"
+        warn "  https://github.com/pensados/sentinelx-cloud-installer/blob/main/docs/ANDROID-TERMUX.md"
+    fi
     exit 0
 fi
 

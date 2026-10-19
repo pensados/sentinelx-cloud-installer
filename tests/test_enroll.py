@@ -8,8 +8,10 @@ because identity.json existed.
 """
 
 import base64
+import io
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -68,3 +70,32 @@ def test_a_readable_legacy_token_is_still_written_as_is(monkeypatch, tmp_path):
     legacy = _jwt({"host_id": "host_old", "sub": "u1", "exp": 1822000000})
     ident = _run(monkeypatch, tmp_path, legacy, exchange=lambda h, t: pytest.fail("legacy is not exchanged"))
     assert ident["token"] == legacy and ident["host_id"] == "host_old"
+
+
+def test_the_exchange_names_itself_and_shows_what_refused_it(monkeypatch):
+    """2026-10-19: Cloudflare's Browser Integrity Check blocked the default
+    'Python-urllib' user agent with 403 'error code: 1010', and the installer said
+    only 'no detail', which read as a bad token."""
+    seen = {}
+
+    def edge_refuses(req, timeout):
+        seen["ua"] = req.get_header("User-agent")
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {},
+                                     io.BytesIO(b"error code: 1010\n"))
+
+    monkeypatch.setattr(enroll.urllib.request, "urlopen", edge_refuses)
+    with pytest.raises(SystemExit) as exc:
+        enroll.exchange_enrollment_token("https://hub.test", ENROLL)
+    assert (seen["ua"] or "").startswith("sentinelx-enroll/")
+    assert "HTTP 403, error code: 1010" in str(exc.value)
+
+
+def test_the_hubs_own_errors_keep_their_messages(monkeypatch):
+    def hub_refuses(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {},
+                                     io.BytesIO(b'{"ok": false, "error": "host_disabled"}'))
+
+    monkeypatch.setattr(enroll.urllib.request, "urlopen", hub_refuses)
+    with pytest.raises(SystemExit) as exc:
+        enroll.exchange_enrollment_token("https://hub.test", ENROLL)
+    assert str(exc.value) == enroll._EXCHANGE_ERRORS["host_disabled"]

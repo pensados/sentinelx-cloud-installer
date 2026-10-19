@@ -37,6 +37,11 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+# Sent on every request to the hub. The default 'Python-urllib/x.y' is blocked
+# by Cloudflare's Browser Integrity Check (HTTP 403, 'error code: 1010'), which
+# broke enrollment against mcp-dev.pensa.ar on 2026-10-19.
+USER_AGENT = "sentinelx-enroll/1 (+https://sentinelx.app)"
+
 # How long we wait for the user to finish the OAuth dance (browser mode)
 TIMEOUT_SECONDS = 600
 
@@ -273,19 +278,23 @@ def exchange_enrollment_token(hub: str, token: str) -> str:
         url,
         data=b"",
         method="POST",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
         try:
-            err = json.loads(exc.read().decode("utf-8") or "{}").get("error")
+            err = json.loads(raw or "{}").get("error")
         except Exception:  # noqa: BLE001
             err = None
+        # Not the hub's JSON (e.g. a proxy or CDN page): show its first line
+        # rather than "no detail", so the cause is visible.
+        detail = err or (raw.strip().splitlines() or ["no detail"])[0][:160]
         raise SystemExit(
             _EXCHANGE_ERRORS.get(err or "")
-            or f"The hub refused the enrollment token (HTTP {exc.code}, {err or 'no detail'})."
+            or f"The hub refused the enrollment token (HTTP {exc.code}, {detail})."
         )
     except (urllib.error.URLError, OSError) as exc:
         raise SystemExit(
