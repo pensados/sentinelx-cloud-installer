@@ -9,6 +9,11 @@
 #   SENTINELX_CORE_REPO     Override the git repo URL
 #   SENTINELX_CORE_REF      Override the git ref (branch/tag/commit, default: main)
 #   SENTINELX_ENROLL_MODE   browser | paste (default: paste — works on headless)
+#   SENTINELX_ENROLL_CODE   Short one-time enrollment code (XXXX-XXXX-XXXX) from the
+#                           dashboard or an assistant: enrolls with no prompt. Case,
+#                           dashes and spaces don't matter.
+#   SENTINELX_ENROLL_TOKEN  The full one-time enrollment token, for automation
+#                           (cloud-init, scripts). Wins over SENTINELX_ENROLL_CODE.
 #   SENTINELX_SKIP_SUDO     Set to 1 to skip the sudoers helper
 set -euo pipefail
 

@@ -99,3 +99,136 @@ def test_the_hubs_own_errors_keep_their_messages(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         enroll.exchange_enrollment_token("https://hub.test", ENROLL)
     assert str(exc.value) == enroll._EXCHANGE_ERRORS["host_disabled"]
+
+
+# --- short enrollment codes (sxc_FBFST45N) -------------------------------------
+# The dashboard and assistants hand out XXXX-XXXX-XXXX instead of the ~640-char
+# token (sxrep_1P2B8GE9JCWY: an assistant rewrote the token and broke it). The
+# installer sends the code as typed; the hub normalises it and answers with the
+# host credential AND the host id the code was made for.
+
+class _Resp:
+    def __init__(self, body):
+        self._b = json.dumps(body).encode()
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("SENTINELX_ENROLL_TOKEN", raising=False)
+    monkeypatch.delenv("SENTINELX_ENROLL_CODE", raising=False)
+
+
+def _hub(monkeypatch, *, status=200, body=None, seen=None):
+    body = body if body is not None else {"ok": True, "credential": "a.b.c", "host_id": "host_from_hub"}
+
+    def urlopen(req, timeout):
+        if seen is not None:
+            seen.append(req)
+        if status != 200:
+            raise urllib.error.HTTPError(req.full_url, status, "x", {},
+                                         io.BytesIO(json.dumps(body).encode()))
+        return _Resp(body)
+    monkeypatch.setattr(enroll.urllib.request, "urlopen", urlopen)
+
+
+def _main(monkeypatch, tmp_path, mode="paste"):
+    out = tmp_path / "identity.json"
+    monkeypatch.setattr(sys, "argv", ["enroll.py", "--hub", "https://hub.test", "--host-id",
+                                      "host_generated", "--output", str(out), "--mode", mode])
+    enroll.main()
+    return json.loads(out.read_text())
+
+
+def test_a_code_from_the_environment_is_exchanged_as_json(monkeypatch, tmp_path):
+    seen = []
+    _hub(monkeypatch, seen=seen)
+    monkeypatch.setenv("SENTINELX_ENROLL_CODE", " abcd-1234-wxyz ")
+    ident = _main(monkeypatch, tmp_path)
+    assert ident == {"host_id": "host_from_hub", "token": "a.b.c", "hub": "https://hub.test"}
+    [req] = seen
+    assert req.full_url == "https://hub.test/agent/enroll"
+    assert json.loads(req.data) == {"code": "abcd-1234-wxyz"}
+    assert req.get_header("Authorization") is None
+    assert req.get_header("Content-type") == "application/json"
+    assert (req.get_header("User-agent") or "").startswith("sentinelx-enroll/")
+
+
+def test_a_typed_code_at_the_prompt_is_exchanged(monkeypatch, tmp_path):
+    seen = []
+    _hub(monkeypatch, seen=seen)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("abcd 1234 wxyz\n"))
+    ident = _main(monkeypatch, tmp_path)
+    assert ident["host_id"] == "host_from_hub" and ident["token"] == "a.b.c"
+    assert json.loads(seen[0].data) == {"code": "abcd 1234 wxyz"}
+
+
+def test_a_pasted_token_still_takes_the_token_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(ENROLL + "\n"))
+    monkeypatch.setattr(enroll, "exchange_enrollment_token", lambda h, t: "host-credential")
+    monkeypatch.setattr(enroll, "exchange_enrollment_code", lambda h, c: pytest.fail("not a code"))
+    ident = _main(monkeypatch, tmp_path)
+    assert ident == {"host_id": "host_abc", "token": "host-credential", "hub": "https://hub.test"}
+
+
+def test_a_code_typed_with_dots_is_still_a_code():
+    assert not enroll.looks_like_token("ABCD.1234.WXYZ")
+    assert enroll.looks_like_token(ENROLL)
+
+
+def test_the_token_variable_wins_over_the_code(monkeypatch, tmp_path):
+    monkeypatch.setenv("SENTINELX_ENROLL_TOKEN", ENROLL)
+    monkeypatch.setenv("SENTINELX_ENROLL_CODE", "ABCD-1234-WXYZ")
+    monkeypatch.setattr(enroll, "exchange_enrollment_token", lambda h, t: "host-credential")
+    monkeypatch.setattr(enroll, "exchange_enrollment_code", lambda h, c: pytest.fail("token wins"))
+    assert _main(monkeypatch, tmp_path)["token"] == "host-credential"
+
+
+def test_a_wrong_or_expired_code_says_so_and_writes_nothing(monkeypatch, tmp_path):
+    _hub(monkeypatch, status=401, body={"ok": False, "error": "invalid_or_expired_code"})
+    monkeypatch.setenv("SENTINELX_ENROLL_CODE", "ABCD-1234-WXYZ")
+    with pytest.raises(SystemExit) as exc:
+        _main(monkeypatch, tmp_path)
+    assert "wrong or has expired" in str(exc.value) and "Nothing was written" in str(exc.value)
+    assert not (tmp_path / "identity.json").exists()
+
+
+def test_too_many_attempts_says_how_long_to_wait(monkeypatch, tmp_path):
+    _hub(monkeypatch, status=429, body={"ok": False, "error": "too_many_attempts", "retry_after": 421})
+    monkeypatch.setenv("SENTINELX_ENROLL_CODE", "ABCD-1234-WXYZ")
+    with pytest.raises(SystemExit) as exc:
+        _main(monkeypatch, tmp_path)
+    assert "Wait 8 minutes" in str(exc.value)
+    assert not (tmp_path / "identity.json").exists()
+
+
+def test_a_used_code_is_told_in_code_words(monkeypatch, tmp_path):
+    _hub(monkeypatch, status=409, body={"ok": False, "error": "enrollment_token_already_used"})
+    monkeypatch.setenv("SENTINELX_ENROLL_CODE", "ABCD-1234-WXYZ")
+    with pytest.raises(SystemExit) as exc:
+        _main(monkeypatch, tmp_path)
+    assert "code was already used" in str(exc.value)
+
+
+def test_a_code_answer_without_a_credential_writes_nothing(monkeypatch, tmp_path):
+    _hub(monkeypatch, body={"ok": True, "host_id": "h"})
+    monkeypatch.setenv("SENTINELX_ENROLL_CODE", "ABCD-1234-WXYZ")
+    with pytest.raises(SystemExit):
+        _main(monkeypatch, tmp_path)
+    assert not (tmp_path / "identity.json").exists()
+
+
+def test_the_prompt_asks_for_a_code(monkeypatch, tmp_path, capsys):
+    _hub(monkeypatch)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("ABCD-1234-WXYZ\n"))
+    _main(monkeypatch, tmp_path)
+    assert "Paste the enrollment code (or token): " in capsys.readouterr().err

@@ -390,6 +390,56 @@ function Invoke-EnrollExchange([string]$Hub, [string]$Token) {
   return [string]$r.credential
 }
 
+# A full enrollment token: three dot-separated segments, hundreds long. The
+# length matters: a code typed with dots between its groups also has three.
+function Test-LooksLikeToken([string]$Value) {
+  return ((($Value -split '\.').Count -eq 3) -and ($Value.Length -gt 64))
+}
+
+# Trade a short enrollment code (XXXX-XXXX-XXXX) for this host's credential.
+# The hub normalises it (case, dashes, spaces, I/L/O) and returns the host id it
+# was made for, which is the one recorded. Same rule as the token: every
+# failure calls Fatal BEFORE identity.json is written. Mirrors enroll.py.
+function Invoke-EnrollCodeExchange([string]$Hub, [string]$Code) {
+  $url = "$($Hub.TrimEnd('/'))/agent/enroll"
+  $body = @{ code = $Code } | ConvertTo-Json -Compress
+  try {
+    $r = Invoke-RestMethod -Method Post -Uri $url -ContentType 'application/json' -Body $body -TimeoutSec 30
+  } catch {
+    # Not $code: PowerShell names are case-insensitive, so that would be the
+    # [string] parameter $Code, and the status 0 of an unreachable hub would
+    # become the truthy string '0'.
+    $status = $null; $err = $null; $retry = $null
+    try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+    try { $j = ($_.ErrorDetails.Message | ConvertFrom-Json); $err = $j.error; $retry = $j.retry_after } catch {}
+    if ($err -eq 'invalid_or_expired_code') {
+      Fatal 'That enrollment code is wrong or has expired. Codes work once and expire after a few hours. Check it, or get a new one (dashboard: + Enroll a new host, or ask your assistant) and run the installer again. Nothing was written.'
+    }
+    if ($err -eq 'too_many_attempts') {
+      $min = 10
+      try { $min = [Math]::Max(1, [int][Math]::Ceiling([double]$retry / 60)) } catch {}
+      Fatal "Too many wrong enrollment codes from this network. Wait $min minute(s) and run the installer again. Nothing was written."
+    }
+    if ($err -eq 'enrollment_token_already_used') {
+      Fatal 'This enrollment code was already used. Codes work once; get a new one (dashboard: + Enroll a new host, or ask your assistant) and run the installer again. Nothing was written.'
+    }
+    if ($err -eq 'host_disabled') {
+      Fatal 'The host this code was made for has been disabled on your account, so it cannot be enrolled. Get a new code from the dashboard.'
+    }
+    if ($err -eq 'enroll_unavailable') {
+      Fatal 'The hub could not check the code just now. Nothing was written; wait a minute and run the installer again with the same code.'
+    }
+    if ($status) {
+      Fatal "The hub refused the enrollment code (HTTP $status, $err). Nothing was written."
+    }
+    Fatal "Could not reach $Hub to exchange the enrollment code: $($_.Exception.Message). Nothing was written; check connectivity and re-run."
+  }
+  if (-not $r -or -not $r.ok -or -not $r.credential -or (([string]$r.credential -split '\.').Count -ne 3)) {
+    Fatal 'The hub did not return a host credential. Nothing was written.'
+  }
+  return $r
+}
+
 Step 'Identity & configuration'
 # 3) identity + config
 if (-not (Test-Path $IdentityPath)) {
@@ -398,38 +448,56 @@ if (-not (Test-Path $IdentityPath)) {
     Copy-Item (Join-Path $ImportFrom 'identity.json') $IdentityPath -Force
   } else {
     $envTok = $env:SENTINELX_ENROLL_TOKEN
+    $envCode = $env:SENTINELX_ENROLL_CODE
+    $enrollCode = $null
     if ($envTok) {
       $tok = $envTok.Trim()
       Info 'Using SENTINELX_ENROLL_TOKEN (non-interactive enrollment).'
+    } elseif ($envCode) {
+      $enrollCode = $envCode.Trim()
+      Info 'Using SENTINELX_ENROLL_CODE (non-interactive enrollment).'
     } else {
-      Info "Enroll in your browser: $HubUrl/auth/dashboard/enroll?host_id=$HostId"
-      $tok = ([string](Read-Host 'Paste enrollment token')).Trim()
+      Info "Get an enrollment code in your browser: $HubUrl/auth/dashboard/enroll?host_id=$HostId"
+      $tok = ([string](Read-Host 'Paste the enrollment code (or token)')).Trim()
+      if (-not $tok) { Fatal 'Nothing entered. Nothing was written.' }
+      # Anything that is not a full token is taken as a code; the hub says
+      # plainly if it is not one.
+      if (-not (Test-LooksLikeToken $tok)) { $enrollCode = $tok }
     }
-    # Refuse an obviously broken paste NOW, before anything is written, instead
-    # of letting the agent loop on an opaque rejection later.
-    if (($tok -split '\.').Count -ne 3) {
-      Fatal 'That does not look like an enrollment token (expected 3 dot-separated segments). Nothing was written.'
+    if ($enrollCode) {
+      # A code is exchanged BEFORE anything is written, like a one-time token;
+      # the hub returns the host id the code was made for.
+      $r = Invoke-EnrollCodeExchange -Hub $HubUrl -Code $enrollCode
+      $idHost = if ($r.host_id) { [string]$r.host_id } else { $HostId }
+      @{ host_id = $idHost; token = [string]$r.credential; hub = $HubUrl } | ConvertTo-Json |
+        Set-Content -Encoding ascii $IdentityPath
+    } else {
+      # Refuse an obviously broken paste NOW, before anything is written, instead
+      # of letting the agent loop on an opaque rejection later.
+      if (($tok -split '\.').Count -ne 3) {
+        Fatal 'That does not look like an enrollment token (expected 3 dot-separated segments). Nothing was written.'
+      }
+      $idHost = $HostId
+      $claims = Get-TokenClaims $tok
+      # A token whose payload can't be read was damaged when it was copied (cut or
+      # retyped; sxrep_VV880Z9JHFXV lost 20 of ~658 characters). It used to fall
+      # through to the legacy branch and be written as-is, leaving an identity the
+      # hub rejects forever -- and a re-run skips enrollment because the file exists.
+      if (@($claims.PSObject.Properties).Count -eq 0) {
+        Fatal 'This token is damaged: part of it was lost when it was copied, so it cannot be read. Nothing was written. Generate a new one from the dashboard and paste it exactly as shown, without retyping it.'
+      }
+      # A non-interactive token was not minted for the id this run generated; the
+      # hub treats the token's own host_id as authoritative, so use it.
+      if ($envTok -and $claims.host_id) { $idHost = [string]$claims.host_id }
+      # A one-time enrollment token is exchanged BEFORE anything is written.
+      # Legacy tokens (no typ) -- every token issued today -- are written as-is.
+      if ($claims.typ -eq 'enroll') {
+        if ($claims.host_id) { $idHost = [string]$claims.host_id }
+        $tok = Invoke-EnrollExchange -Hub $HubUrl -Token $tok
+      }
+      @{ host_id = $idHost; token = $tok; hub = $HubUrl } | ConvertTo-Json |
+        Set-Content -Encoding ascii $IdentityPath
     }
-    $idHost = $HostId
-    $claims = Get-TokenClaims $tok
-    # A token whose payload can't be read was damaged when it was copied (cut or
-    # retyped; sxrep_VV880Z9JHFXV lost 20 of ~658 characters). It used to fall
-    # through to the legacy branch and be written as-is, leaving an identity the
-    # hub rejects forever -- and a re-run skips enrollment because the file exists.
-    if (@($claims.PSObject.Properties).Count -eq 0) {
-      Fatal 'This token is damaged: part of it was lost when it was copied, so it cannot be read. Nothing was written. Generate a new one from the dashboard and paste it exactly as shown, without retyping it.'
-    }
-    # A non-interactive token was not minted for the id this run generated; the
-    # hub treats the token's own host_id as authoritative, so use it.
-    if ($envTok -and $claims.host_id) { $idHost = [string]$claims.host_id }
-    # A one-time enrollment token is exchanged BEFORE anything is written.
-    # Legacy tokens (no typ) -- every token issued today -- are written as-is.
-    if ($claims.typ -eq 'enroll') {
-      if ($claims.host_id) { $idHost = [string]$claims.host_id }
-      $tok = Invoke-EnrollExchange -Hub $HubUrl -Token $tok
-    }
-    @{ host_id = $idHost; token = $tok; hub = $HubUrl } | ConvertTo-Json |
-      Set-Content -Encoding ascii $IdentityPath
   }
 }
 if (-not (Test-Path $ConfigPath)) {

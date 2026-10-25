@@ -10,8 +10,14 @@ Two modes:
    or via SSH tunnel: `ssh -L 8765:localhost:8765 server`).
 
 2. **paste**: just print instructions for the user to visit the dashboard URL,
-   complete enrollment there, copy the JWT, and paste it on stdin. Works on
-   any headless server.
+   complete enrollment there, and type or paste what it shows on stdin: the
+   short enrollment code (XXXX-XXXX-XXXX) or the full token. Works on any
+   headless server.
+
+Non-interactive: SENTINELX_ENROLL_CODE (the short code, what the dashboard and
+assistants hand out) or SENTINELX_ENROLL_TOKEN (the full token, for automation).
+Either way the hub exchanges it at POST /agent/enroll for this host's session
+credential, which is all identity.json ever holds.
 
 The installer chooses the mode automatically based on `--mode` (default: browser).
 The script never opens the browser itself — always prints the URL for the user
@@ -172,12 +178,12 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
     print("  1. Open this URL in your browser:", file=sys.stderr)
     print(banner(dashboard_url), file=sys.stderr)
     print("  2. Log in with your SentinelX account.", file=sys.stderr)
-    print("  3. The page will display an enrollment token.", file=sys.stderr)
-    print("  4. Copy it and paste it below.", file=sys.stderr)
+    print("  3. The page will display an enrollment code (XXXX-XXXX-XXXX).", file=sys.stderr)
+    print("  4. Type or paste it below.", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
     print(file=sys.stderr)
 
-    print("Paste enrollment token: ", file=sys.stderr, end="", flush=True)
+    print("Paste the enrollment code (or token): ", file=sys.stderr, end="", flush=True)
 
     # Read the token. If we were started via `curl | bash` then sys.stdin is
     # the install script itself (already consumed) and reading it returns "".
@@ -208,7 +214,7 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
 
     if not token:
         raise SystemExit(
-            "No token entered.\n"
+            "Nothing entered.\n"
             "\n"
             "If the prompt stalled and nothing happened when you pasted: your\n"
             "`sudo` likely uses `Defaults use_pty` (the default on modern Ubuntu),\n"
@@ -219,11 +225,24 @@ def run_paste_mode(hub: str, host_id: str) -> dict[str, str]:
             "  curl -fsSL https://get.sentinelx.app | bash\n"
             "\n"
             "(Pass SENTINELX_HOST_ID=host_xxx to reuse this host's id.)\n"
+            "\n"
+            "Or skip the prompt: put the code in the command,\n"
+            "  curl -fsSL https://get.sentinelx.app | SENTINELX_ENROLL_CODE=XXXX-XXXX-XXXX bash\n"
         )
-    if token.count(".") != 2:
-        raise SystemExit("Token doesn't look like a JWT (expected 3 segments).")
+    if looks_like_token(token):
+        return {"token": token, "host_id": host_id}
+    # Anything else is taken as a code; the hub normalises it (case, dashes,
+    # spaces, I/L/O) and says plainly if it is not one.
+    return {"code": token, "host_id": host_id}
 
-    return {"token": token, "host_id": host_id}
+
+def looks_like_token(value: str) -> bool:
+    """A full enrollment token: three dot-separated segments, hundreds long.
+
+    The length matters: a code typed with dots between its groups
+    (ABCD.1234.WXYZ) also has three segments.
+    """
+    return value.count(".") == 2 and len(value) > 64
 
 
 def _claims_unverified(token: str) -> dict:
@@ -264,21 +283,54 @@ _EXCHANGE_ERRORS = {
     ),
 }
 
+# What the hub says about a CODE, in the words the person used: they never saw
+# a token. Codes and tokens otherwise share the exchange and its errors.
+_CODE_ERRORS = {
+    "invalid_or_expired_code": (
+        "That enrollment code is wrong or has expired. Codes work once and\n"
+        "expire after a few hours. Check it, or get a new one (dashboard: +\n"
+        "Enroll a new host, or ask your assistant) and run the installer again.\n"
+        "Nothing was written."
+    ),
+    "enrollment_token_already_used": (
+        "This enrollment code was already used. Codes work once; get a new one\n"
+        "(dashboard: + Enroll a new host, or ask your assistant) and run the\n"
+        "installer again. Nothing was written."
+    ),
+    "host_disabled": (
+        "The host this code was made for has been disabled on your account, so\n"
+        "it cannot be enrolled. Get a new code from the dashboard."
+    ),
+    "enroll_unavailable": (
+        "The hub could not check the code just now. Nothing was written; wait a\n"
+        "minute and run the installer again with the same code."
+    ),
+}
 
-def exchange_enrollment_token(hub: str, token: str) -> str:
-    """Trade a one-time enrollment token for this host's session credential.
 
-    Exits on ANY failure without writing identity.json. That matters: the
-    installer skips enrollment whenever identity.json exists, so a file written
-    with a token that never worked would leave a host that silently never
-    connects, and re-running would not fix it.
+def _too_many_attempts(retry_after: object) -> str:
+    try:
+        minutes = max(1, -(-int(retry_after) // 60))  # round up
+    except (TypeError, ValueError):
+        minutes = 10
+    return (
+        "Too many wrong enrollment codes from this network. Wait "
+        f"{minutes} minute{'s' if minutes != 1 else ''} and run the installer again.\n"
+        "Nothing was written."
+    )
+
+
+def _post_enroll(hub: str, *, headers: dict, data: bytes, errors: dict, what: str) -> dict:
+    """POST /agent/enroll and return the hub's JSON. Exits on any refusal.
+
+    Exits WITHOUT writing identity.json. That matters: the installer skips
+    enrollment whenever identity.json exists, so a file written with something
+    that never worked would leave a host that silently never connects, and
+    re-running would not fix it.
     """
     url = f"{hub.rstrip('/')}/agent/enroll"
     req = urllib.request.Request(
-        url,
-        data=b"",
-        method="POST",
-        headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+        url, data=data, method="POST", headers={"User-Agent": USER_AGENT, **headers}
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -286,26 +338,53 @@ def exchange_enrollment_token(hub: str, token: str) -> str:
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", "replace")
         try:
-            err = json.loads(raw or "{}").get("error")
+            payload = json.loads(raw or "{}")
         except Exception:  # noqa: BLE001
-            err = None
+            payload = {}
+        err = payload.get("error") if isinstance(payload, dict) else None
+        if err == "too_many_attempts":
+            raise SystemExit(_too_many_attempts(payload.get("retry_after")))
         # Not the hub's JSON (e.g. a proxy or CDN page): show its first line
         # rather than "no detail", so the cause is visible.
         detail = err or (raw.strip().splitlines() or ["no detail"])[0][:160]
         raise SystemExit(
-            _EXCHANGE_ERRORS.get(err or "")
-            or f"The hub refused the enrollment token (HTTP {exc.code}, {detail})."
+            errors.get(err or "")
+            or f"The hub refused the enrollment {what} (HTTP {exc.code}, {detail})."
         )
     except (urllib.error.URLError, OSError) as exc:
         raise SystemExit(
-            f"Could not reach {hub} to exchange the enrollment token: {exc}\n"
+            f"Could not reach {hub} to exchange the enrollment {what}: {exc}\n"
             "Nothing was written; check connectivity and run the installer again."
         )
     cred = body.get("credential") if isinstance(body, dict) else None
     if not isinstance(body, dict) or not body.get("ok") or not isinstance(cred, str) \
             or cred.count(".") != 2:
         raise SystemExit("The hub did not return a host credential. Nothing was written.")
-    return cred
+    return body
+
+
+def exchange_enrollment_token(hub: str, token: str) -> str:
+    """Trade a one-time enrollment token for this host's session credential."""
+    body = _post_enroll(
+        hub, headers={"Authorization": f"Bearer {token}"}, data=b"",
+        errors=_EXCHANGE_ERRORS, what="token",
+    )
+    return body["credential"]
+
+
+def exchange_enrollment_code(hub: str, code: str) -> tuple[str, str | None]:
+    """Trade a short enrollment code for (credential, host_id).
+
+    The code says nothing about the host by itself; the hub returns the host id
+    it was made for, and that is the one recorded.
+    """
+    body = _post_enroll(
+        hub, headers={"Content-Type": "application/json"},
+        data=json.dumps({"code": code}).encode("utf-8"),
+        errors=_CODE_ERRORS, what="code",
+    )
+    host_id = body.get("host_id")
+    return body["credential"], host_id if isinstance(host_id, str) and host_id else None
 
 
 def run_env_mode(token: str, host_id: str) -> dict[str, str]:
@@ -322,6 +401,12 @@ def run_env_mode(token: str, host_id: str) -> dict[str, str]:
     return {"token": token, "host_id": _claims_unverified(token).get("host_id") or host_id}
 
 
+def run_env_code_mode(code: str, host_id: str) -> dict[str, str]:
+    """Non-interactive enrollment from SENTINELX_ENROLL_CODE (the short code)."""
+    print("Using SENTINELX_ENROLL_CODE (non-interactive enrollment).", file=sys.stderr)
+    return {"code": code.strip(), "host_id": host_id}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Enroll this host with SentinelX")
     parser.add_argument("--hub", required=True, help="Hub base URL (e.g. https://mcp.sentinelx.app)")
@@ -336,12 +421,21 @@ def main() -> None:
     args = parser.parse_args()
 
     env_token = os.environ.get("SENTINELX_ENROLL_TOKEN", "").strip()
+    env_code = os.environ.get("SENTINELX_ENROLL_CODE", "").strip()
     if env_token:
         result = run_env_mode(env_token, args.host_id)
+    elif env_code:
+        result = run_env_code_mode(env_code, args.host_id)
     elif args.mode == "paste":
         result = run_paste_mode(args.hub, args.host_id)
     else:
         result = run_browser_mode(args.hub, args.host_id)
+
+    if "code" in result:
+        credential, enrolled_host = exchange_enrollment_code(args.hub, result["code"])
+        _write_identity(args.output, enrolled_host or result.get("host_id", args.host_id),
+                        credential, args.hub)
+        return
 
     token = result["token"]
     host_id = result.get("host_id", args.host_id)
@@ -362,13 +456,16 @@ def main() -> None:
         host_id = claims.get("host_id") or host_id
         token = exchange_enrollment_token(args.hub, token)
 
+    _write_identity(args.output, host_id, token, args.hub)
+
+
+def _write_identity(output: str, host_id: str, token: str, hub: str) -> None:
     identity = {
         "host_id": host_id,
         "token": token,
-        "hub": args.hub,
+        "hub": hub,
     }
-
-    out_path = Path(args.output)
+    out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(identity, indent=2))
     print(f"Identity written to {out_path}", file=sys.stderr)

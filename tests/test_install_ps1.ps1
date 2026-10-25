@@ -29,9 +29,17 @@ foreach ($e in $pe) { Write-Host "  parse error line $($e.Extent.StartLineNumber
 Check 'install.ps1 parses with 0 errors' ($pe.Count -eq 0)
 
 # --- load the installer's own functions --------------------------------------
-$want = 'Info', 'Warn', 'Fatal', 'Get-TokenClaims', 'Invoke-EnrollExchange'
+$want = 'Info', 'Warn', 'Fatal', 'Get-TokenClaims', 'Invoke-EnrollExchange', 'Test-LooksLikeToken'
 $defs = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
 foreach ($d in $defs) { if ($want -contains $d.Name) { . ([scriptblock]::Create($d.Extent.Text)) } }
+# The real code exchange, under another name: section 3 replaces it with a stub
+# (the block must not reach a hub), section 4 calls the real one over HTTP.
+foreach ($d in $defs) {
+  if ($d.Name -eq 'Invoke-EnrollCodeExchange') {
+    . ([scriptblock]::Create(($d.Extent.Text -replace '^function Invoke-EnrollCodeExchange', 'function Real-EnrollCodeExchange')))
+  }
+}
+Check 'code exchange function found' ($null -ne (Get-Command Real-EnrollCodeExchange -ErrorAction SilentlyContinue))
 # Fatal really does `exit 1`; make it throw so a test can observe the message.
 function Fatal($m) { throw "FATAL: $m" }
 
@@ -51,15 +59,27 @@ $blk = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.IfStat
 Check 'enrollment block found' ($null -ne $blk)
 $HubUrl = 'https://hub.invalid'; $HostId = 'host_generated'; $ImportFrom = $null
 $IdentityPath = Join-Path $env:TEMP 'sx_identity_test.json'
-function Invoke-Block([string]$Paste, [string]$EnvTok) {
+function Invoke-Block([string]$Paste, [string]$EnvTok, [string]$EnvCode) {
   Remove-Item $IdentityPath -ErrorAction SilentlyContinue
-  $script:PASTE = $Paste
+  $script:PASTE = $Paste; $script:SENT = $null; $script:PROMPT = $null
   if ($EnvTok) { $env:SENTINELX_ENROLL_TOKEN = $EnvTok } else { Remove-Item Env:\SENTINELX_ENROLL_TOKEN -ErrorAction SilentlyContinue }
+  if ($EnvCode) { $env:SENTINELX_ENROLL_CODE = $EnvCode } else { Remove-Item Env:\SENTINELX_ENROLL_CODE -ErrorAction SilentlyContinue }
   try { . ([scriptblock]::Create($blk.Extent.Text)); return 'ok' }
   catch { return $_.Exception.Message }
-  finally { Remove-Item Env:\SENTINELX_ENROLL_TOKEN -ErrorAction SilentlyContinue }
+  finally {
+    Remove-Item Env:\SENTINELX_ENROLL_TOKEN -ErrorAction SilentlyContinue
+    Remove-Item Env:\SENTINELX_ENROLL_CODE -ErrorAction SilentlyContinue
+  }
 }
-function Read-Host($p) { return $script:PASTE }   # the user pasting
+function Read-Host($p) { $script:PROMPT = $p; return $script:PASTE }   # the user pasting
+# The hub, for codes: 'ABCD-1234-WXYZ' in any typing is good, anything else is not.
+function Invoke-EnrollCodeExchange([string]$Hub, [string]$Code) {
+  $script:SENT = $Code
+  if (($Code.ToUpper() -replace '[\s-]', '') -eq 'ABCD1234WXYZ') {
+    return [pscustomobject]@{ ok = $true; credential = 'h.cred.x'; host_id = 'host_from_hub' }
+  }
+  Fatal 'That enrollment code is wrong or has expired.'
+}
 
 $r = Invoke-Block "  $legacy  " ''
 $id = Get-Content $IdentityPath -Raw | ConvertFrom-Json
@@ -72,9 +92,33 @@ $id = Get-Content $IdentityPath -Raw | ConvertFrom-Json
 Check 'env legacy: written as-is' (($r -eq 'ok') -and ($id.token -eq $legacy))
 Check 'env legacy: token host_id used' ($id.host_id -eq 'host_legacy')
 
+# Anything that is not a full token is a code now; the hub refuses garbage.
 $r = Invoke-Block 'no-es-un-token' ''
-Check 'paste garbage: refused' ($r -like 'FATAL: That does not look like an enrollment token*') $r
+Check 'paste garbage: sent as a code' ($script:SENT -eq 'no-es-un-token')
+Check 'paste garbage: refused' ($r -like 'FATAL: That enrollment code is wrong*') $r
 Check 'paste garbage: nothing written' (-not (Test-Path $IdentityPath))
+
+# --- 3b. short codes ---------------------------------------------------------
+$r = Invoke-Block '  abcd 1234 wxyz ' ''
+$id = Get-Content $IdentityPath -Raw | ConvertFrom-Json
+Check 'paste code: prompt asks for a code' ($script:PROMPT -eq 'Paste the enrollment code (or token)') $script:PROMPT
+Check 'paste code: exchanged, trimmed' (($r -eq 'ok') -and ($script:SENT -eq 'abcd 1234 wxyz')) $r
+Check 'paste code: credential written' ($id.token -eq 'h.cred.x')
+Check 'paste code: the hub''s host_id used' ($id.host_id -eq 'host_from_hub')
+
+$r = Invoke-Block '' '' 'ABCD-1234-WXYZ'
+$id = Get-Content $IdentityPath -Raw | ConvertFrom-Json
+Check 'env code: no prompt' ($null -eq $script:PROMPT)
+Check 'env code: written' (($r -eq 'ok') -and ($id.token -eq 'h.cred.x') -and ($id.host_id -eq 'host_from_hub')) $r
+
+$r = Invoke-Block '' '' 'ZZZZ-ZZZZ-ZZZZ'
+Check 'env code wrong: refused, nothing written' (($r -like 'FATAL: That enrollment code is wrong*') -and -not (Test-Path $IdentityPath)) $r
+
+$r = Invoke-Block '' $legacy 'ABCD-1234-WXYZ'
+Check 'env token wins over env code' (($r -eq 'ok') -and ($null -eq $script:SENT)) $r
+
+Check 'a code typed with dots is not a token' (-not (Test-LooksLikeToken 'ABCD.1234.WXYZ'))
+Check 'a real token is a token' (Test-LooksLikeToken $enroll)
 # A one-time token that lost characters when it was copied (sxrep_VV880Z9JHFXV).
 # Whether its payload stays readable depends on where the cut falls:
 $segs = $enroll -split '\.'
@@ -100,6 +144,13 @@ $r = Try-Exchange ''
 Check '5.1: missing token surfaces its code' ($r -like '*missing_token*') $r
 $r = Try-Exchange 'aaa.bbb.ccc' 'https://127.0.0.1:9'
 Check '5.1: unreachable hub -> could not reach' ($r -like 'FATAL: Could not reach*') $r
+function Try-Code([string]$Code, [string]$Hub = $hub) {
+  try { return 'CRED:' + (Real-EnrollCodeExchange -Hub $Hub -Code $Code).credential } catch { return $_.Exception.Message }
+}
+$r = Try-Code 'ZZZZ-ZZZZ-ZZZZ'
+Check '5.1: unknown code -> wrong or expired' ($r -like 'FATAL: That enrollment code is wrong*') $r
+$r = Try-Code 'ZZZZ-ZZZZ-ZZZZ' 'https://127.0.0.1:9'
+Check '5.1: code, unreachable hub -> could not reach' ($r -like 'FATAL: Could not reach*') $r
 
 # --- 5. real exchange, then reuse (single-use token from a repo secret) ------
 if ($env:ENROLL_TOKEN_OK) {
